@@ -1,0 +1,16 @@
+{
+  "name": "gestionstore",
+  "version": "1.0.0",
+  "description": "Application de gestion de boutique (PWA offline-first)",
+  "private": true,
+  "scripts": {
+    "install:all": "cd frontend && npm install && cd ../backend && npm install",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && npm run dev",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "preview": "cd frontend && npm run preview"
+  },
+  "author": "Djamatigui",
+  "license": "ISC"
+}
