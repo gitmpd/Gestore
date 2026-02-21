@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Menu, LogOut, Wifi, WifiOff, Moon, Sun, Bell, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Menu, LogOut, Wifi, WifiOff, Moon, Sun, Bell, AlertTriangle, RefreshCw, Store } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { syncAll } from '@/services/syncService';
 import { db } from '@/db';
+import { getShopNameOrDefault } from '@/lib/shop';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -18,6 +19,7 @@ export function Header({ onMenuClick }: HeaderProps) {
   const logout = useAuthStore((s) => s.logout);
   const isOnline = useOnlineStatus();
   const { theme, toggle } = useThemeStore();
+  const shopName = getShopNameOrDefault();
   const [notifOpen, setNotifOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -38,26 +40,41 @@ export function Header({ onMenuClick }: HeaderProps) {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-4 bg-surface border-b border-border lg:px-6">
-      <button
-        onClick={onMenuClick}
-        className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 lg:hidden"
-      >
-        <Menu size={22} className="text-text" />
-      </button>
+    <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-3 sm:px-4 bg-surface border-b border-border lg:px-6">
+      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 pr-2">
+        <button
+          onClick={onMenuClick}
+          className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 lg:hidden"
+        >
+          <Menu size={22} className="text-text" />
+        </button>
+        <div className="sm:hidden flex items-center gap-1.5 min-w-0">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Store size={16} />
+          </div>
+          <p className="text-sm font-semibold text-text truncate max-w-[calc(100vw-250px)]">{shopName}</p>
+        </div>
+        <div className="hidden sm:flex items-center gap-2 min-w-0 max-w-[56vw] sm:max-w-[360px] rounded-xl border border-border/80 bg-slate-50/70 dark:bg-slate-800/60 px-2.5 py-1.5 shadow-sm">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Store size={16} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wide text-text-muted leading-none">Boutique</p>
+            <p className="font-bold text-primary break-words">{shopName}</p>
+          </div>
+        </div>
+      </div>
 
-      <div className="flex-1" />
-
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <div
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+          className={`flex items-center gap-1.5 px-2 py-1 sm:px-2.5 rounded-full text-xs font-medium ${
             isOnline
               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
               : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'
           }`}
         >
           {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
-          {isOnline ? 'En ligne' : 'Hors ligne'}
+          <span className="hidden min-[421px]:inline">{isOnline ? 'En ligne' : 'Hors ligne'}</span>
         </div>
 
         {isOnline && (

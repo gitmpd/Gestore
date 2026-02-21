@@ -27,6 +27,7 @@ const navItems = [
   { to: '/stock', icon: ArrowRightLeft, label: 'Mouvements de stock' },
   { to: '/customers', icon: Users, label: 'Clients' },
   { to: '/customer-orders', icon: ClipboardList, label: 'Commandes clients' },
+  { to: '/supplier-orders', icon: Truck, label: 'Commandes fournisseurs', role: 'gerant' as const },
   { to: '/suppliers', icon: Truck, label: 'Fournisseurs', role: 'gerant' as const },
   { to: '/expenses', icon: Wallet, label: 'Dépenses', role: 'gerant' as const },
   { to: '/reports', icon: BarChart3, label: 'Rapports', role: 'gerant' as const },

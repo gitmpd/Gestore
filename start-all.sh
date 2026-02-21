@@ -8,10 +8,13 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if [ ! -d "frontend/node_modules" ]; then
-    echo "[!] Les dépendances ne sont pas installées."
-    echo "    Lancez d'abord : ./install.sh"
-    exit 1
+if [ ! -d "frontend/node_modules" ] || [ ! -d "backend/node_modules" ]; then
+    echo "[!] Dependances manquantes. Installation automatique..."
+    "$SCRIPT_DIR/install.sh"
+    if [ $? -ne 0 ]; then
+        echo "[ERREUR] Installation automatique echouee."
+        exit 1
+    fi
 fi
 
 if [ ! -f "backend/.env" ]; then

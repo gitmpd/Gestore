@@ -20,6 +20,7 @@ export interface User extends SyncFields {
   email: string;
   password?: string;
   role: UserRole;
+  createdByUserId?: string;
   active: boolean;
   mustChangePassword?: boolean;
   deleted?: boolean;
@@ -67,6 +68,7 @@ export interface Supplier extends SyncFields {
   name: string;
   phone: string;
   address: string;
+  creditBalance?: number;
   deleted?: boolean;
 }
 
@@ -98,6 +100,7 @@ export interface SupplierOrder extends SyncFields {
   date: string;
   total: number;
   status: OrderStatus;
+  isCredit?: boolean;
   userId?: string;
 }
 
@@ -134,12 +137,24 @@ export interface CreditTransaction extends SyncFields {
   deleted?: boolean;
 }
 
+export interface SupplierCreditTransaction extends SyncFields {
+  id: string;
+  supplierId: string;
+  orderId?: string;
+  amount: number;
+  type: 'credit' | 'payment';
+  date: string;
+  note?: string;
+  deleted?: boolean;
+}
+
 export interface CustomerOrder extends SyncFields {
   id: string;
   customerId: string;
   date: string;
   total: number;
   deposit: number;
+  paymentMethod?: PaymentMethod;
   status: CustomerOrderStatus;
   saleId?: string;
   note?: string;

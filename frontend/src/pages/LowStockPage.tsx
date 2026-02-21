@@ -1,17 +1,32 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { Package, ArrowLeft, Search, TrendingDown, CheckCircle, ArrowRightLeft } from 'lucide-react';
 import { db } from '@/db';
+import type { Product } from '@/types';
+import { useAuthStore } from '@/stores/authStore';
+import { generateId, nowISO } from '@/lib/utils';
+import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
 
 type StockFilter = 'all' | 'rupture' | 'low' | 'ok';
 
 export function LowStockPage() {
   const navigate = useNavigate();
+  const currentUser = useAuthStore((s) => s.user);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<StockFilter>('all');
+  const [reorderModalOpen, setReorderModalOpen] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [supplierId, setSupplierId] = useState('');
+  const [orderQty, setOrderQty] = useState(1);
+  const [unitPrice, setUnitPrice] = useState(0);
+  const [receiveNow, setReceiveNow] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
 
   const categories = useLiveQuery(() => db.categories.toArray()) ?? [];
+  const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
 
   const allProducts = useLiveQuery(async () => {
@@ -61,6 +76,123 @@ export function LowStockPage() {
     { key: 'low', label: 'Stock bas', count: lowCount },
     { key: 'ok', label: 'Suffisant', count: okCount },
   ];
+
+  const openReorderModal = (product: Product) => {
+    setSelectedProduct(product);
+    setSupplierId(suppliers[0]?.id ?? '');
+    setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
+    setUnitPrice(product.buyPrice ?? 0);
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setReorderModalOpen(true);
+  };
+
+  const handleCreateSupplierOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedProduct || orderQty <= 0 || unitPrice < 0) {
+      toast.error('Vérifie les données de la commande');
+      return;
+    }
+    const now = nowISO();
+    const total = orderQty * unitPrice;
+
+    let finalSupplierId = supplierId;
+    if (!finalSupplierId) {
+      const unknown = suppliers.find((s) => s.name.toLowerCase() === 'fournisseur inconnu');
+      if (unknown) {
+        finalSupplierId = unknown.id;
+      } else {
+        finalSupplierId = generateId();
+        await db.suppliers.add({
+          id: finalSupplierId,
+          name: 'Fournisseur inconnu',
+          phone: '-',
+          address: '-',
+          creditBalance: 0,
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
+    }
+
+    const orderId = generateId();
+    await db.supplierOrders.add({
+      id: orderId,
+      supplierId: finalSupplierId,
+      date: now,
+      total,
+      status: receiveNow ? 'recue' : 'en_attente',
+      isCredit: receiveNow ? paymentMode === 'credit' : false,
+      userId: currentUser?.id,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await db.orderItems.add({
+      id: generateId(),
+      orderId,
+      productId: selectedProduct.id,
+      productName: selectedProduct.name,
+      quantity: orderQty,
+      unitPrice,
+      total,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    if (receiveNow) {
+      await db.products.update(selectedProduct.id, {
+        quantity: selectedProduct.quantity + orderQty,
+        buyPrice: unitPrice,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.stockMovements.add({
+        id: generateId(),
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        type: 'entree',
+        quantity: orderQty,
+        date: now,
+        reason: `Réception commande fournisseur #${orderId.slice(0, 8)}`,
+        userId: currentUser?.id,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: finalSupplierId,
+        orderId,
+        amount: total,
+        type: paymentMode === 'credit' ? 'credit' : 'payment',
+        date: now,
+        note: paymentMode === 'credit' ? 'Commande reçue à crédit' : 'Commande payée',
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      if (paymentMode === 'credit') {
+        const supplier = await db.suppliers.get(finalSupplierId);
+        if (supplier) {
+          await db.suppliers.update(finalSupplierId, {
+            creditBalance: (supplier.creditBalance ?? 0) + total,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        }
+      }
+    }
+
+    setReorderModalOpen(false);
+    toast.success(receiveNow ? 'Commande enregistrée et stock mis à jour' : 'Commande fournisseur enregistrée');
+  };
 
   return (
     <div className="space-y-6">
@@ -144,7 +276,7 @@ export function LowStockPage() {
             return (
               <button
                 key={product.id}
-                onClick={() => navigate(`/stock?product=${product.id}`)}
+                onClick={() => openReorderModal(product)}
                 className={`rounded-xl border p-5 ${level.bg} transition-all duration-200 hover:shadow-lg hover:-translate-y-1 cursor-pointer text-left group`}
               >
                 <div className="flex items-start justify-between mb-3">
@@ -201,6 +333,110 @@ export function LowStockPage() {
           })}
         </div>
       )}
+
+      <Modal
+        open={reorderModalOpen}
+        onClose={() => setReorderModalOpen(false)}
+        title={`Commander: ${selectedProduct?.name ?? ''}`}
+      >
+        <form onSubmit={handleCreateSupplierOrder} className="space-y-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-text">Fournisseur</label>
+            <select
+              className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              <option value="">Fournisseur inconnu</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Quantité</label>
+              <input
+                type="number"
+                min={1}
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={orderQty}
+                onChange={(e) => setOrderQty(Number(e.target.value) || 0)}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Prix unitaire achat</label>
+              <input
+                type="number"
+                min={0}
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={unitPrice}
+                onChange={(e) => setUnitPrice(Number(e.target.value) || 0)}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text">Traitement</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setReceiveNow(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  !receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                En attente
+              </button>
+              <button
+                type="button"
+                onClick={() => setReceiveNow(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                Reçue maintenant
+              </button>
+            </div>
+          </div>
+
+          {receiveNow && (
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-text">Paiement fournisseur</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('cash')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Payée
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('credit')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'credit' ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  À crédit
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setReorderModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">Enregistrer commande</Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

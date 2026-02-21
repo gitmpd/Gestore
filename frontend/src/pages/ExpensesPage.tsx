@@ -84,6 +84,8 @@ export function ExpensesPage() {
   const [period, setPeriod] = useState<FilterPeriod>('this_month');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [expenseSearch, setExpenseSearch] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const allExpenses = useLiveQuery(() => db.expenses.orderBy('date').reverse().toArray()) ?? [];
   const allUsers = useLiveQuery(async () => (await db.users.toArray()).filter((u) => !u.deleted)) ?? [];
@@ -94,6 +96,8 @@ export function ExpensesPage() {
   const expenses = useMemo(() => {
     return allExpenses.filter((e) => {
       if (filterDate && new Date(e.date) < filterDate) return false;
+      if (dateFrom && e.date < dateFrom) return false;
+      if (dateTo && e.date > dateTo + 'T23:59:59') return false;
       if (categoryFilter && e.category !== categoryFilter) return false;
       if (expenseSearch) {
         const q = expenseSearch.toLowerCase();
@@ -105,7 +109,7 @@ export function ExpensesPage() {
       }
       return true;
     });
-  }, [allExpenses, filterDate, categoryFilter, expenseSearch, userMap]);
+  }, [allExpenses, filterDate, categoryFilter, expenseSearch, userMap, dateFrom, dateTo]);
 
   const totalExpenses = useMemo(
     () => expenses.reduce((sum, e) => sum + e.amount, 0),
@@ -298,6 +302,20 @@ export function ExpensesPage() {
             <option key={k} value={k}>{v}</option>
           ))}
         </select>
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          title="Date debut"
+        />
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          title="Date fin"
+        />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

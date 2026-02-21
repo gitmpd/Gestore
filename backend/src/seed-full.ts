@@ -11,6 +11,32 @@ function past(daysAgo: number): Date {
   return d;
 }
 
+function cleanSeedName(raw: string): string {
+  const base = raw
+    .replace(/^\s*\d+\s*[-.)]?\s*/u, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const fixes: Array<[RegExp, string]> = [
+    [/\bMOUSTICAIE\b/giu, 'MOUSTICAIRE'],
+    [/\bPAPILLER\b/giu, 'PAPIER'],
+    [/\bVINAICRE\b/giu, 'VINAIGRE'],
+    [/\bMACORONI\b/giu, 'MACARONI'],
+    [/\bPATTES\b/giu, 'PATE'],
+    [/\bBROCHES A DENTS\b/giu, 'BROSSE A DENTS'],
+    [/\bALLUMETS\b/giu, 'ALLUMETTES'],
+    [/\bARRALONGIE\b/giu, 'RALLONGE'],
+    [/\bBEURE\b/giu, 'BEURRE'],
+    [/\bCHIGOME\b/giu, 'CHIGOMME'],
+    [/\bCARTE JOUER\b/giu, 'CARTE A JOUER'],
+    [/\bTAILLANT\b/giu, 'TAILLE-CRAYON'],
+    [/\bCORNE BÅ’UF\b/giu, 'CORNE BOEUF'],
+    [/\bCHAUSURES\b/giu, 'CHAUSSURES'],
+  ];
+
+  return fixes.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), base);
+}
+
 async function main() {
   const adminPassword = await bcrypt.hash('admin123', 10);
   const admin = await prisma.user.upsert({
@@ -202,7 +228,8 @@ async function main() {
     products.push(await prisma.product.create({ 
       data: { 
         id: uuid(), 
-        ...p, 
+        ...p,
+        name: cleanSeedName(p.name),
         barcode: `600${Math.floor(1000000000 + Math.random() * 9000000000)}`,
         categoryId: catAlimentation.id 
       } 
@@ -213,7 +240,8 @@ async function main() {
     products.push(await prisma.product.create({ 
       data: { 
         id: uuid(), 
-        ...p, 
+        ...p,
+        name: cleanSeedName(p.name),
         barcode: `600${Math.floor(1000000000 + Math.random() * 9000000000)}`,
         categoryId: catBoissons.id 
       } 
@@ -224,7 +252,8 @@ async function main() {
     products.push(await prisma.product.create({ 
       data: { 
         id: uuid(), 
-        ...p, 
+        ...p,
+        name: cleanSeedName(p.name),
         barcode: `600${Math.floor(1000000000 + Math.random() * 9000000000)}`,
         categoryId: catHygiene.id 
       } 
@@ -235,7 +264,8 @@ async function main() {
     products.push(await prisma.product.create({ 
       data: { 
         id: uuid(), 
-        ...p, 
+        ...p,
+        name: cleanSeedName(p.name),
         barcode: `600${Math.floor(1000000000 + Math.random() * 9000000000)}`,
         categoryId: catMenage.id 
       } 
@@ -246,7 +276,8 @@ async function main() {
     products.push(await prisma.product.create({ 
       data: { 
         id: uuid(), 
-        ...p, 
+        ...p,
+        name: cleanSeedName(p.name),
         barcode: `600${Math.floor(1000000000 + Math.random() * 9000000000)}`,
         categoryId: catDettes.id 
       } 
@@ -271,7 +302,7 @@ async function main() {
   
   const clients = [];
   for (const c of clientsData) {
-    clients.push(await prisma.customer.create({ data: { id: uuid(), ...c } }));
+    clients.push(await prisma.customer.create({ data: { id: uuid(), ...c, name: cleanSeedName(c.name) } }));
   }
   console.log(clients.length + ' clients créés');
 
@@ -284,7 +315,7 @@ async function main() {
   
   const suppliers = [];
   for (const s of suppliersData) {
-    suppliers.push(await prisma.supplier.create({ data: { id: uuid(), ...s } }));
+    suppliers.push(await prisma.supplier.create({ data: { id: uuid(), ...s, name: cleanSeedName(s.name) } }));
   }
   console.log(suppliers.length + ' fournisseurs créés');
 

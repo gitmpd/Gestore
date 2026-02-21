@@ -17,6 +17,8 @@ import { exportCSV } from '@/lib/export';
 import { stockMovementSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
 
+type ManualMovementType = 'ajustement' | 'retour';
+
 const typeLabels: Record<StockMovementType, string> = {
   entree: 'Entrée',
   sortie: 'Sortie',
@@ -44,13 +46,15 @@ export function StockPage() {
   const isGerant = currentUser?.role === 'gerant';
   const [searchParams, setSearchParams] = useSearchParams();
   const [modalOpen, setModalOpen] = useState(false);
-  const [type, setType] = useState<StockMovementType>('entree');
+  const [type, setType] = useState<ManualMovementType>('ajustement');
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState(0);
   const [reason, setReason] = useState('');
 
   const [stockSearch, setStockSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<StockMovementType | 'all'>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   useEffect(() => {
     const preselect = searchParams.get('product');
@@ -70,6 +74,8 @@ export function StockPage() {
   const filteredMovements = useMemo(() => {
     return movements.filter((m) => {
       if (typeFilter !== 'all' && m.type !== typeFilter) return false;
+      if (dateFrom && m.date < dateFrom) return false;
+      if (dateTo && m.date > dateTo + 'T23:59:59') return false;
       if (stockSearch) {
         const q = stockSearch.toLowerCase();
         return (
@@ -80,7 +86,7 @@ export function StockPage() {
       }
       return true;
     });
-  }, [movements, stockSearch, typeFilter, userMap]);
+  }, [movements, stockSearch, typeFilter, userMap, dateFrom, dateTo]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -94,9 +100,15 @@ export function StockPage() {
 
     const now = nowISO();
     let newQty = product.quantity;
-    if (type === 'entree' || type === 'retour') newQty += quantity;
-    else if (type === 'sortie') newQty = Math.max(0, newQty - quantity);
-    else newQty = quantity;
+    if (type === 'retour') {
+      newQty += quantity;
+    } else {
+      if (quantity > product.quantity) {
+        toast.error(`Ajustement invalide: la nouvelle quantite (${quantity}) ne peut pas depasser le stock actuel (${product.quantity}).`);
+        return;
+      }
+      newQty = quantity;
+    }
 
     await db.products.update(productId, {
       quantity: newQty,
@@ -193,6 +205,20 @@ export function StockPage() {
             </button>
           ))}
         </div>
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          title="Date debut"
+        />
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          title="Date fin"
+        />
       </div>
 
       <div className="bg-surface rounded-xl border border-border">
@@ -245,10 +271,13 @@ export function StockPage() {
         title="Nouveau mouvement de stock"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          <p className="text-xs text-text-muted">
+            Entrée et sortie sont automatiques (réception commande fournisseur et ventes). Ici: retour client, ou ajustement sans augmentation de stock.
+          </p>
           <div className="flex flex-col gap-1">
             <label className="text-sm font-medium text-text">Type</label>
             <div className="flex gap-2">
-              {(['entree', 'sortie', 'ajustement', 'retour'] as const).map((t) => (
+              {(['ajustement', 'retour'] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -295,7 +324,7 @@ export function StockPage() {
             label="Raison"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Ex: Réapprovisionnement, Vente, Inventaire..."
+            placeholder="Ex: Retour client, correction inventaire..."
             required
           />
 
@@ -310,3 +339,4 @@ export function StockPage() {
     </div>
   );
 }
+

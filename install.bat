@@ -1,5 +1,10 @@
 @echo off
 chcp 65001 >nul
+set NO_PAUSE=0
+if /I "%~1"=="--no-pause" set NO_PAUSE=1
+
+set SHOULD_PAUSE=1
+if "%NO_PAUSE%"=="1" set SHOULD_PAUSE=0
 echo ============================================
 echo   GestionStore - Installation
 echo   Application de gestion de boutique
@@ -12,7 +17,7 @@ if %errorlevel% neq 0 (
     echo.
     echo Installez Node.js ^(version 18 ou plus^) depuis : https://nodejs.org/fr/download
     echo.
-    pause
+    if "%SHOULD_PAUSE%"=="1" pause
     exit /b 1
 )
 
@@ -27,7 +32,7 @@ if %errorlevel% neq 0 (
     echo [ERREUR] L'installation du frontend a echoue.
     echo          Essayez : rmdir /s /q node_modules ^&^& npm install
     cd ..
-    pause
+    if "%SHOULD_PAUSE%"=="1" pause
     exit /b 1
 )
 echo [OK] Frontend installe.
@@ -41,7 +46,7 @@ if %errorlevel% neq 0 (
     echo [ERREUR] L'installation du backend a echoue.
     echo          Essayez : rmdir /s /q node_modules ^&^& npm install
     cd ..
-    pause
+    if "%SHOULD_PAUSE%"=="1" pause
     exit /b 1
 )
 echo [OK] Backend installe.
@@ -69,4 +74,4 @@ echo.
 echo Comptes par defaut (mode hors-ligne) :
 echo   Gerant  : admin@store.com / admin123
 echo.
-pause
+if "%SHOULD_PAUSE%"=="1" pause

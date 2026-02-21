@@ -60,12 +60,15 @@ model User {
   email              String     @unique
   password           String
   role               UserRole   @default(vendeur)
+  createdByUserId    String?
   active             Boolean    @default(true)
   mustChangePassword Boolean    @default(true)
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
   syncStatus         SyncStatus @default(synced)
   lastSyncedAt       DateTime?
+  createdBy          User?      @relation("UserCreator", fields: [createdByUserId], references: [id])
+  createdUsers       User[]     @relation("UserCreator")
   sales              Sale[]
 }
 

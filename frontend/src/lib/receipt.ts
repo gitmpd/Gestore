@@ -1,4 +1,5 @@
 import { formatCurrency } from './utils';
+import { getShopNameOrDefault } from './shop';
 
 interface ReceiptItem {
   productName: string;
@@ -18,12 +19,30 @@ interface ReceiptData {
   shopName?: string;
 }
 
-function buildReceiptHtml(data: ReceiptData): string {
-  const shop = data.shopName || 'GestionStore';
-  const dateStr = new Date(data.date).toLocaleString('fr-FR', {
+function sanitizeTitle(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getReceiptMeta(data: ReceiptData) {
+  const shop = (data.shopName || getShopNameOrDefault()).trim();
+  const safeShop = sanitizeTitle(shop);
+  const dateObj = new Date(data.date);
+  const dateStr = dateObj.toLocaleString('fr-FR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+  const stamp = `${dateObj.getFullYear()}${String(dateObj.getMonth() + 1).padStart(2, '0')}${String(dateObj.getDate()).padStart(2, '0')}-${String(dateObj.getHours()).padStart(2, '0')}${String(dateObj.getMinutes()).padStart(2, '0')}`;
+  const fileBase = `${safeShop}-Facture-${data.saleId.slice(0, 8)}-${stamp}`;
+  return { shop, dateStr, fileBase };
+}
+
+function buildReceiptHtml(data: ReceiptData): string {
+  const { shop, dateStr, fileBase } = getReceiptMeta(data);
 
   const itemsHtml = data.items.map((item) => `
     <tr>
@@ -38,7 +57,7 @@ function buildReceiptHtml(data: ReceiptData): string {
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>${shop} - Reçu ${dateStr.replace(/\//g, '-')}</title>
+  <title>${fileBase}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Courier New', monospace; font-size: 12px; width: 80mm; margin: 0 auto; padding: 8mm 4mm; color: #000; background: #fff; }
@@ -64,13 +83,13 @@ function buildReceiptHtml(data: ReceiptData): string {
 <body>
   <div class="center">
     <div class="shop">${shop}</div>
-    <div style="font-size:10px;color:#555">Reçu de vente</div>
+    <div style="font-size:10px;color:#555">Recu de vente</div>
   </div>
 
   <div class="divider"></div>
 
   <div class="info">
-    <span class="label">Réf :</span> #${data.saleId.slice(0, 8)}<br>
+    <span class="label">Ref :</span> #${data.saleId.slice(0, 8)}<br>
     <span class="label">Date :</span> ${dateStr}<br>
     <span class="label">Paiement :</span> ${data.paymentMethod}<br>
     ${data.customerName ? `<span class="label">Client :</span> ${data.customerName}<br>` : ''}
@@ -81,7 +100,7 @@ function buildReceiptHtml(data: ReceiptData): string {
 
   <table>
     <thead>
-      <tr><th>Article</th><th>Qté</th><th>P.U.</th><th>Total</th></tr>
+      <tr><th>Article</th><th>Qte</th><th>P.U.</th><th>Total</th></tr>
     </thead>
     <tbody>
       ${itemsHtml}
@@ -109,8 +128,6 @@ function buildReceiptHtml(data: ReceiptData): string {
 
 export function printReceipt(data: ReceiptData) {
   const html = buildReceiptHtml(data);
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
 
   const iframe = document.createElement('iframe');
   iframe.style.position = 'fixed';
@@ -118,7 +135,7 @@ export function printReceipt(data: ReceiptData) {
   iframe.style.left = '-10000px';
   iframe.style.width = '80mm';
   iframe.style.height = '0';
-  iframe.src = url;
+  iframe.srcdoc = html;
 
   iframe.onload = () => {
     try {
@@ -127,7 +144,6 @@ export function printReceipt(data: ReceiptData) {
     } finally {
       setTimeout(() => {
         document.body.removeChild(iframe);
-        URL.revokeObjectURL(url);
       }, 1000);
     }
   };
