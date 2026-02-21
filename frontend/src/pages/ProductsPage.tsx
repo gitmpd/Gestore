@@ -2,9 +2,9 @@ import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Pencil, Trash2, ArrowLeft, Download, History } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, ArrowLeft, Download } from 'lucide-react';
 import { db } from '@/db';
-import type { Product, ProductUsage, PriceHistory } from '@/types';
+import type { Product, ProductUsage } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -51,12 +51,8 @@ export function ProductsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editing, setEditing] = useState<Product | null>(null);
   const [form, setForm] = useState<Partial<Product>>(emptyProduct());
-  const [historyModalOpen, setHistoryModalOpen] = useState(false);
-  const [priceHistory, setPriceHistory] = useState<PriceHistory[]>([]);
-  const [historyProductName, setHistoryProductName] = useState('');
 
   const categories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
-
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
 
   const products = useLiveQuery(async () => {
@@ -82,68 +78,76 @@ export function ProductsPage() {
 
   const openEdit = (product: Product) => {
     setEditing(product);
-    setForm({ ...product });
+    setForm({
+      id: product.id,
+      name: product.name,
+      barcode: product.barcode,
+      categoryId: product.categoryId,
+      sellPrice: product.sellPrice,
+      alertThreshold: product.alertThreshold,
+      usage: product.usage,
+    });
     setModalOpen(true);
-  };
-
-  const openPriceHistory = async (product: Product) => {
-    const history = await db.priceHistory
-      .where('productId')
-      .equals(product.id)
-      .toArray();
-    history.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    setPriceHistory(history);
-    setHistoryProductName(product.name);
-    setHistoryModalOpen(true);
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+
     const result = validate(productSchema, {
       name: form.name || '',
       barcode: form.barcode,
       categoryId: form.categoryId || '',
-      buyPrice: Number(form.buyPrice),
+      buyPrice: editing?.buyPrice ?? 0,
       sellPrice: Number(form.sellPrice),
-      quantity: Number(form.quantity),
+      quantity: editing?.quantity ?? 0,
       alertThreshold: Number(form.alertThreshold),
       usage: form.usage,
     });
+
     if (!result.success) {
       toast.error(Object.values(result.errors)[0]);
       return;
     }
+
     const now = nowISO();
 
     if (editing) {
       const changes: string[] = [];
-      if (form.name !== editing.name) changes.push(`Nom : ${editing.name} → ${form.name}`);
-      if (form.barcode !== editing.barcode) changes.push(`Code-barres : ${editing.barcode || '—'} → ${form.barcode || '—'}`);
+      if (form.name !== editing.name) changes.push(`Nom : ${editing.name} -> ${form.name}`);
+      if (form.barcode !== editing.barcode) changes.push(`Code-barres : ${editing.barcode || '-'} -> ${form.barcode || '-'}`);
       if (form.categoryId !== editing.categoryId) {
-        const oldCat = categories.find(c => c.id === editing.categoryId)?.name ?? '—';
-        const newCat = categories.find(c => c.id === form.categoryId)?.name ?? '—';
-        changes.push(`Catégorie : ${oldCat} → ${newCat}`);
+        const oldCat = categories.find((c) => c.id === editing.categoryId)?.name ?? '-';
+        const newCat = categories.find((c) => c.id === form.categoryId)?.name ?? '-';
+        changes.push(`Categorie : ${oldCat} -> ${newCat}`);
       }
-      if (Number(form.buyPrice) !== editing.buyPrice) changes.push(`Prix achat : ${formatCurrency(editing.buyPrice)} → ${formatCurrency(Number(form.buyPrice))}`);
-      if (Number(form.sellPrice) !== editing.sellPrice) changes.push(`Prix vente : ${formatCurrency(editing.sellPrice)} → ${formatCurrency(Number(form.sellPrice))}`);
-      if (Number(form.quantity) !== editing.quantity) changes.push(`Stock : ${editing.quantity} → ${Number(form.quantity)}`);
-      if (Number(form.alertThreshold) !== editing.alertThreshold) changes.push(`Seuil alerte : ${editing.alertThreshold} → ${Number(form.alertThreshold)}`);
-      if ((form.usage || 'achat_vente') !== (editing.usage || 'achat_vente')) changes.push(`Usage : ${usageLabels[editing.usage || 'achat_vente']} → ${usageLabels[form.usage || 'achat_vente']}`);
+      if (Number(form.sellPrice) !== editing.sellPrice) {
+        changes.push(`Prix vente : ${formatCurrency(editing.sellPrice)} -> ${formatCurrency(Number(form.sellPrice))}`);
+      }
+      if (Number(form.alertThreshold) !== editing.alertThreshold) {
+        changes.push(`Seuil alerte : ${editing.alertThreshold} -> ${Number(form.alertThreshold)}`);
+      }
+      if ((form.usage || 'achat_vente') !== (editing.usage || 'achat_vente')) {
+        changes.push(`Usage : ${usageLabels[editing.usage || 'achat_vente']} -> ${usageLabels[form.usage || 'achat_vente']}`);
+      }
 
       await db.products.update(editing.id, {
-        ...form,
+        name: form.name!,
+        barcode: form.barcode || '',
+        categoryId: form.categoryId!,
+        sellPrice: Number(form.sellPrice),
+        alertThreshold: Number(form.alertThreshold),
+        usage: form.usage || 'achat_vente',
         updatedAt: now,
         syncStatus: 'pending',
       });
 
-      const buyChanged = Number(form.buyPrice) !== editing.buyPrice;
       const sellChanged = Number(form.sellPrice) !== editing.sellPrice;
-      if (buyChanged || sellChanged) {
+      if (sellChanged) {
         await db.priceHistory.add({
           id: generateId(),
           productId: editing.id,
           oldBuyPrice: editing.buyPrice,
-          newBuyPrice: Number(form.buyPrice),
+          newBuyPrice: editing.buyPrice,
           oldSellPrice: editing.sellPrice,
           newSellPrice: Number(form.sellPrice),
           userId: currentUser?.id,
@@ -167,9 +171,9 @@ export function ProductsPage() {
         name: form.name!,
         barcode: form.barcode || '',
         categoryId: form.categoryId!,
-        buyPrice: Number(form.buyPrice),
+        buyPrice: 0,
         sellPrice: Number(form.sellPrice),
-        quantity: Number(form.quantity),
+        quantity: 0,
         alertThreshold: Number(form.alertThreshold),
         usage: form.usage || 'achat_vente',
         createdAt: now,
@@ -178,27 +182,32 @@ export function ProductsPage() {
       });
       await logAction({ action: 'creation', entity: 'produit', entityId: id, entityName: form.name });
     }
+
     setModalOpen(false);
-    toast.success(editing ? 'Produit modifié' : 'Produit ajouté');
+    toast.success(editing ? 'Produit modifie' : 'Produit ajoute');
   };
 
   const handleDelete = async (id: string) => {
     const product = await db.products.get(id);
     if (!product) return;
+
     const ok = await confirmAction({
       title: 'Supprimer le produit',
-      message: `Supprimer le produit « ${product.name} » ?\n\nCette action supprimera aussi ses mouvements de stock associés.`,
+      message: `Supprimer le produit "${product.name}" ?\n\nCette action supprimera aussi ses mouvements de stock associes.`,
       confirmLabel: 'Supprimer',
       variant: 'danger',
     });
     if (!ok) return;
+
     const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
     const now = nowISO();
+
     await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
     for (const mId of movementIds) {
       await db.stockMovements.update(mId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
       await trackDeletion('stockMovements', mId as string);
     }
+
     await trackDeletion('products', id);
     await logAction({ action: 'suppression', entity: 'produit', entityId: id, entityName: product.name });
   };
@@ -207,11 +216,16 @@ export function ProductsPage() {
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <button onClick={() => navigate(-1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-text-muted hover:text-text transition-colors" title="Retour">
+          <button
+            onClick={() => navigate(-1)}
+            className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-text-muted hover:text-text transition-colors"
+            title="Retour"
+          >
             <ArrowLeft size={20} />
           </button>
           <h1 className="text-2xl font-bold text-text">Produits</h1>
         </div>
+
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -219,33 +233,35 @@ export function ProductsPage() {
             onClick={() => {
               const rows = products.map((p) => [
                 p.name,
-                categories.find((c) => c.id === p.categoryId)?.name ?? '—',
-                formatCurrency(p.buyPrice),
+                categories.find((c) => c.id === p.categoryId)?.name ?? '-',
                 formatCurrency(p.sellPrice),
                 p.quantity,
                 p.alertThreshold,
               ]);
-              exportCSV('produits', ['Nom', 'Catégorie', 'Prix achat', 'Prix vente', 'Stock', 'Seuil alerte'], rows);
-              toast.success('Export CSV téléchargé');
+              exportCSV('produits', ['Nom', 'Categorie', 'Prix vente', 'Stock', 'Seuil alerte'], rows);
+              toast.success('Export CSV telecharge');
             }}
             disabled={products.length === 0}
           >
             <Download size={16} /> CSV
           </Button>
+
           <Button onClick={openAdd}>
             <Plus size={18} /> Ajouter
           </Button>
+
           {isGerant && selectedIds.length > 0 && (
             <Button
               variant="danger"
               onClick={async () => {
                 const ok = await confirmAction({
-                  title: 'Supprimer les produits sélectionnés',
-                  message: `Voulez-vous supprimer ${selectedIds.length} produit(s) sélectionné(s) ? Cette action est logique (marque 'deleted').`,
+                  title: 'Supprimer les produits selectionnes',
+                  message: `Voulez-vous supprimer ${selectedIds.length} produit(s) selectionne(s) ?`,
                   confirmLabel: 'Supprimer',
                   variant: 'danger',
                 });
                 if (!ok) return;
+
                 const now = nowISO();
                 const names: string[] = [];
                 for (const id of selectedIds) {
@@ -259,9 +275,10 @@ export function ProductsPage() {
                   }
                   await trackDeletion('products', id);
                 }
+
                 await logAction({ action: 'suppression', entity: 'produit', details: `Suppression multiple: ${names.join(', ')}` });
                 setSelectedIds([]);
-                toast.success('Produits supprimés');
+                toast.success('Produits supprimes');
               }}
             >
               <Trash2 size={16} /> Supprimer
@@ -280,12 +297,13 @@ export function ProductsPage() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
         >
-          <option value="">Toutes les catégories</option>
+          <option value="">Toutes les categories</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
@@ -309,20 +327,20 @@ export function ProductsPage() {
                 </Th>
               )}
               <Th>Produit</Th>
-              <Th>Catégorie</Th>
+              <Th>Categorie</Th>
               <Th>Usage</Th>
-              <Th>Prix achat</Th>
               <Th>Prix vente</Th>
               <Th>Stock</Th>
               <Th>Statut</Th>
               <Th />
             </Tr>
           </Thead>
+
           <Tbody>
-              {products.length === 0 ? (
+            {products.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 9 : 8} className="text-center text-text-muted py-8">
-                  Aucun produit trouvé
+                <Td colSpan={isGerant ? 8 : 7} className="text-center text-text-muted py-8">
+                  Aucun produit trouve
                 </Td>
               </Tr>
             ) : (
@@ -340,21 +358,25 @@ export function ProductsPage() {
                       />
                     </Td>
                   )}
+
                   <Td>
                     <div>
                       <p className="font-medium">{p.name}</p>
                       {p.barcode && <p className="text-xs text-text-muted">{p.barcode}</p>}
                     </div>
                   </Td>
-                  <Td>{categoryMap.get(p.categoryId) ?? '—'}</Td>
+
+                  <Td>{categoryMap.get(p.categoryId) ?? '-'}</Td>
+
                   <Td>
                     <Badge variant={usageVariants[p.usage || 'achat_vente']}>
                       {usageLabels[p.usage || 'achat_vente']}
                     </Badge>
                   </Td>
-                  <Td>{formatCurrency(p.buyPrice)}</Td>
+
                   <Td>{formatCurrency(p.sellPrice)}</Td>
                   <Td className="font-semibold">{p.quantity}</Td>
+
                   <Td>
                     {p.quantity <= p.alertThreshold ? (
                       <Badge variant="danger">Stock bas</Badge>
@@ -362,11 +384,9 @@ export function ProductsPage() {
                       <Badge variant="success">OK</Badge>
                     )}
                   </Td>
+
                   <Td>
                     <div className="flex gap-1">
-                      <button onClick={() => openPriceHistory(p)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700" title="Historique des prix">
-                        <History size={16} className="text-text-muted" />
-                      </button>
                       <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700">
                         <Pencil size={16} className="text-text-muted" />
                       </button>
@@ -398,6 +418,7 @@ export function ProductsPage() {
             placeholder="Ex : Riz 5kg, Huile 1L..."
             required
           />
+
           <Input
             id="barcode"
             label="Code-barres (optionnel)"
@@ -405,9 +426,10 @@ export function ProductsPage() {
             onChange={(e) => setForm({ ...form, barcode: e.target.value })}
             placeholder="Ex : 6001234567890"
           />
+
           <div className="flex flex-col gap-1">
             <label htmlFor="categoryId" className="text-sm font-medium text-text">
-              Catégorie
+              Categorie
             </label>
             <select
               id="categoryId"
@@ -416,17 +438,13 @@ export function ProductsPage() {
               onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
               required
             >
-              <option value="">Sélectionner une catégorie</option>
+              <option value="">Selectionner une categorie</option>
               {categories.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
-            {categories.length === 0 && (
-              <p className="text-xs text-amber-600">
-                Aucune catégorie. Créez-en d'abord dans Paramètres.
-              </p>
-            )}
           </div>
+
           <div className="flex flex-col gap-1">
             <label htmlFor="usage" className="text-sm font-medium text-text">
               Usage du produit
@@ -452,17 +470,8 @@ export function ProductsPage() {
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              id="buyPrice"
-              label="Prix d'achat"
-              type="number"
-              min={0}
-              value={form.buyPrice}
-              onChange={(e) => setForm({ ...form, buyPrice: Number(e.target.value) })}
-              placeholder="Ex : 2500"
-              required
-            />
+
+          <div className="grid grid-cols-1 gap-3">
             <Input
               id="sellPrice"
               label="Prix de vente"
@@ -474,17 +483,8 @@ export function ProductsPage() {
               required
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              id="quantity"
-              label="Quantité en stock"
-              type="number"
-              min={0}
-              value={form.quantity}
-              onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })}
-              placeholder="Ex : 100"
-              required
-            />
+
+          <div className="grid grid-cols-1 gap-3">
             <Input
               id="alertThreshold"
               label="Seuil d'alerte"
@@ -496,6 +496,10 @@ export function ProductsPage() {
               required
             />
           </div>
+          <p className="text-xs text-text-muted">
+            Le stock initial est a 0. Les entrees de stock se font uniquement via reception de commande fournisseur ou retour client.
+          </p>
+
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
               Annuler
@@ -503,38 +507,6 @@ export function ProductsPage() {
             <Button type="submit">{editing ? 'Modifier' : 'Ajouter'}</Button>
           </div>
         </form>
-      </Modal>
-
-      <Modal
-        open={historyModalOpen}
-        onClose={() => setHistoryModalOpen(false)}
-        title={`Historique des prix — ${historyProductName}`}
-      >
-        {priceHistory.length === 0 ? (
-          <p className="text-sm text-text-muted text-center py-6">Aucun changement de prix enregistré.</p>
-        ) : (
-          <div className="space-y-3 max-h-80 overflow-y-auto">
-            {priceHistory.map((h) => (
-              <div key={h.id} className="border border-border rounded-lg p-3 text-sm">
-                <p className="text-xs text-text-muted mb-2">
-                  {new Date(h.createdAt).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <span className="text-text-muted">Achat : </span>
-                    <span className={h.oldBuyPrice !== h.newBuyPrice ? 'line-through text-text-muted' : 'text-text'}>{formatCurrency(h.oldBuyPrice)}</span>
-                    {h.oldBuyPrice !== h.newBuyPrice && <span className="text-text font-medium"> → {formatCurrency(h.newBuyPrice)}</span>}
-                  </div>
-                  <div>
-                    <span className="text-text-muted">Vente : </span>
-                    <span className={h.oldSellPrice !== h.newSellPrice ? 'line-through text-text-muted' : 'text-text'}>{formatCurrency(h.oldSellPrice)}</span>
-                    {h.oldSellPrice !== h.newSellPrice && <span className="text-text font-medium"> → {formatCurrency(h.newSellPrice)}</span>}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </Modal>
     </div>
   );

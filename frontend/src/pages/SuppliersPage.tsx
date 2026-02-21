@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Pencil, Trash2, ShoppingCart, PackageCheck, ArrowLeft } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, ShoppingCart, PackageCheck, ArrowLeft, CreditCard } from 'lucide-react';
 import { db } from '@/db';
 import type { Supplier, SupplierOrder, OrderStatus } from '@/types';
 import { Button } from '@/components/ui/Button';
@@ -33,6 +33,7 @@ const emptySupplier = (): Partial<Supplier> => ({
   name: '',
   phone: '',
   address: '',
+  creditBalance: 0,
 });
 
 export function SuppliersPage() {
@@ -42,9 +43,13 @@ export function SuppliersPage() {
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [orderModalOpen, setOrderModalOpen] = useState(false);
+  const [creditModalOpen, setCreditModalOpen] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState<Partial<Supplier>>(emptySupplier());
+  const [creditAmount, setCreditAmount] = useState(0);
+  const [creditType, setCreditType] = useState<'credit' | 'payment'>('payment');
+  const [creditNote, setCreditNote] = useState('');
 
   const [orderProducts, setOrderProducts] = useState<
     { productId: string; productName: string; quantity: number; unitPrice: number }[]
@@ -76,6 +81,15 @@ export function SuppliersPage() {
       .sortBy('date');
   }, [selectedSupplier]) ?? [];
 
+  const supplierTransactions = useLiveQuery(async () => {
+    if (!selectedSupplier) return [];
+    return db.supplierCreditTransactions
+      .where('supplierId')
+      .equals(selectedSupplier.id)
+      .reverse()
+      .sortBy('date');
+  }, [selectedSupplier]) ?? [];
+
   const openAdd = () => {
     setEditing(null);
     setForm(emptySupplier());
@@ -92,6 +106,14 @@ export function SuppliersPage() {
     setSelectedSupplier(s);
     setOrderProducts([]);
     setOrderModalOpen(true);
+  };
+
+  const openCredit = (s: Supplier) => {
+    setSelectedSupplier(s);
+    setCreditAmount(0);
+    setCreditType('payment');
+    setCreditNote('');
+    setCreditModalOpen(true);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -122,6 +144,7 @@ export function SuppliersPage() {
         name: form.name!,
         phone: form.phone!,
         address: form.address!,
+        creditBalance: 0,
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
@@ -177,18 +200,34 @@ export function SuppliersPage() {
     setOrderProducts([]);
   };
 
-  const receiveOrder = async (order: SupplierOrder) => {
+  const receiveOrder = async (order: SupplierOrder, paymentMode: 'cash' | 'credit') => {
     const now = nowISO();
     const items = await db.orderItems.where('orderId').equals(order.id).toArray();
 
     for (const item of items) {
       const product = await db.products.get(item.productId);
       if (product) {
+        const buyPriceChanged = product.buyPrice !== item.unitPrice;
         await db.products.update(item.productId, {
           quantity: product.quantity + item.quantity,
+          buyPrice: item.unitPrice,
           updatedAt: now,
           syncStatus: 'pending',
         });
+        if (buyPriceChanged) {
+          await db.priceHistory.add({
+            id: generateId(),
+            productId: item.productId,
+            oldBuyPrice: product.buyPrice,
+            newBuyPrice: item.unitPrice,
+            oldSellPrice: product.sellPrice,
+            newSellPrice: product.sellPrice,
+            userId: currentUser?.id,
+            createdAt: now,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        }
         await db.stockMovements.add({
           id: generateId(),
           productId: item.productId,
@@ -196,7 +235,7 @@ export function SuppliersPage() {
           type: 'entree',
           quantity: item.quantity,
           date: now,
-          reason: `Réception commande fournisseur #${order.id.slice(0, 8)}`,
+          reason: `Reception commande fournisseur #${order.id.slice(0, 8)}`,
           userId: currentUser?.id,
           createdAt: now,
           updatedAt: now,
@@ -207,16 +246,92 @@ export function SuppliersPage() {
 
     await db.supplierOrders.update(order.id, {
       status: 'recue',
+      isCredit: paymentMode === 'credit',
       updatedAt: now,
       syncStatus: 'pending',
     });
+
+    if (paymentMode === 'credit') {
+      const supplier = await db.suppliers.get(order.supplierId);
+      if (supplier) {
+        await db.suppliers.update(order.supplierId, {
+          creditBalance: (supplier.creditBalance ?? 0) + order.total,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: order.supplierId,
+        orderId: order.id,
+        amount: order.total,
+        type: 'credit',
+        date: now,
+        note: `Commande #${order.id.slice(0, 8)} recue a credit`,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+    } else {
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: order.supplierId,
+        orderId: order.id,
+        amount: order.total,
+        type: 'payment',
+        date: now,
+        note: `Commande #${order.id.slice(0, 8)} payee`,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+    }
 
     await logAction({
       action: 'reception_commande',
       entity: 'commande',
       entityId: order.id,
-      details: `Commande #${order.id.slice(0, 8)} — ${formatCurrency(order.total)}`,
+      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)} - ${paymentMode === 'credit' ? 'Credit fournisseur' : 'Payee'}`,
     });
+  };
+
+  const handleCreditSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedSupplier || creditAmount <= 0) return;
+    const now = nowISO();
+
+    const current = selectedSupplier.creditBalance ?? 0;
+    const nextBalance = creditType === 'credit' ? current + creditAmount : Math.max(0, current - creditAmount);
+
+    await db.suppliers.update(selectedSupplier.id, {
+      creditBalance: nextBalance,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await db.supplierCreditTransactions.add({
+      id: generateId(),
+      supplierId: selectedSupplier.id,
+      amount: creditAmount,
+      type: creditType,
+      date: now,
+      note: creditNote || undefined,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await logAction({
+      action: creditType === 'payment' ? 'paiement' : 'credit',
+      entity: 'fournisseur',
+      entityId: selectedSupplier.id,
+      entityName: selectedSupplier.name,
+      details: (creditType === 'payment' ? 'Paiement fournisseur: ' : 'Dette fournisseur: ') + formatCurrency(creditAmount) + (creditNote ? ' - ' + creditNote : ''),
+    });
+
+    setSelectedSupplier({ ...selectedSupplier, creditBalance: nextBalance });
+    setCreditModalOpen(false);
+    toast.success('Credit fournisseur mis a jour');
   };
 
   const handleDelete = async (id: string) => {
@@ -290,13 +405,14 @@ export function SuppliersPage() {
               <Th>Nom</Th>
               <Th>Téléphone</Th>
               <Th>Adresse</Th>
+              <Th>Credit</Th>
               <Th />
             </Tr>
           </Thead>
           <Tbody>
             {suppliers.length === 0 ? (
               <Tr>
-                <Td colSpan={4} className="text-center text-text-muted py-8">
+                <Td colSpan={5} className="text-center text-text-muted py-8">
                   Aucun fournisseur trouvé
                 </Td>
               </Tr>
@@ -307,6 +423,13 @@ export function SuppliersPage() {
                   <Td>{s.phone}</Td>
                   <Td className="text-text-muted">{s.address}</Td>
                   <Td>
+                    {(s.creditBalance ?? 0) > 0 ? (
+                      <Badge variant="danger">{formatCurrency(s.creditBalance ?? 0)}</Badge>
+                    ) : (
+                      <Badge variant="success">Aucun</Badge>
+                    )}
+                  </Td>
+                  <Td>
                     <div className="flex gap-1">
                       <button
                         onClick={() => openOrders(s)}
@@ -314,6 +437,13 @@ export function SuppliersPage() {
                         title="Commandes"
                       >
                         <ShoppingCart size={16} className="text-primary" />
+                      </button>
+                      <button
+                        onClick={() => openCredit(s)}
+                        className="p-1.5 rounded hover:bg-amber-50"
+                        title="Credit fournisseur"
+                      >
+                        <CreditCard size={16} className="text-amber-600" />
                       </button>
                       <button onClick={() => openEdit(s)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700">
                         <Pencil size={16} className="text-text-muted" />
@@ -429,13 +559,22 @@ export function SuppliersPage() {
                       <span className="font-semibold text-sm text-text">{formatCurrency(o.total)}</span>
                       <Badge variant={statusVariants[o.status]}>{statusLabels[o.status]}</Badge>
                       {o.status === 'en_attente' && (
-                        <button
-                          onClick={() => receiveOrder(o)}
+                        <>
+                          <button
+                          onClick={() => receiveOrder(o, 'cash')}
                           className="p-1.5 rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 text-emerald-700 dark:text-emerald-400"
                           title="Marquer comme reçue"
                         >
                           <PackageCheck size={16} />
                         </button>
+                          <button
+                            onClick={() => receiveOrder(o, 'credit')}
+                          className="p-1.5 rounded bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-800/60 text-amber-700 dark:text-amber-400"
+                          title="Marquer recue a credit"
+                        >
+                          <CreditCard size={16} />
+                        </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -444,6 +583,92 @@ export function SuppliersPage() {
             </div>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        open={creditModalOpen}
+        onClose={() => setCreditModalOpen(false)}
+        title={`Credit fournisseur - ${selectedSupplier?.name}`}
+        className="max-w-xl"
+      >
+        <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
+          <p className="text-sm text-text-muted">Solde credit fournisseur</p>
+          <p className="text-xl font-bold text-text">
+            {formatCurrency(selectedSupplier?.creditBalance ?? 0)}
+          </p>
+        </div>
+
+        <form onSubmit={handleCreditSubmit} className="space-y-4">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setCreditType('payment')}
+              className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                creditType === 'payment'
+                  ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
+                  : 'border-border text-text-muted'
+              }`}
+            >
+              Paiement fournisseur
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreditType('credit')}
+              className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                creditType === 'credit'
+                  ? 'border-red-500 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+                  : 'border-border text-text-muted'
+              }`}
+            >
+              Nouveau credit
+            </button>
+          </div>
+
+          <Input
+            id="supplierCreditAmt"
+            label="Montant"
+            type="number"
+            min={0}
+            value={creditAmount}
+            onChange={(e) => setCreditAmount(Number(e.target.value))}
+            placeholder="Ex : 5000"
+            required
+          />
+
+          <Input
+            id="supplierCreditNote"
+            label="Note (optionnel)"
+            value={creditNote}
+            onChange={(e) => setCreditNote(e.target.value)}
+            placeholder="Ex : paiement partiel"
+          />
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setCreditModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">Enregistrer</Button>
+          </div>
+        </form>
+
+        {supplierTransactions.length > 0 && (
+          <div className="mt-6 border-t border-border pt-4">
+            <h4 className="text-sm font-semibold text-text mb-2">Historique credit fournisseur</h4>
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {supplierTransactions.map((t) => (
+                <div key={t.id} className="flex items-center justify-between text-sm py-1.5 border-b border-border/50">
+                  <div>
+                    <span className={t.type === 'payment' ? 'text-emerald-600' : 'text-red-600'}>
+                      {t.type === 'payment' ? 'Paiement' : 'Credit'}
+                    </span>
+                    {t.note && <span className="text-text-muted ml-2">- {t.note}</span>}
+                  </div>
+                  <p className="font-medium text-text">{formatCurrency(t.amount)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

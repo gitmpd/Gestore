@@ -16,6 +16,7 @@ import type {
   Expense,
   CustomerOrder,
   CustomerOrderItem,
+  SupplierCreditTransaction,
 } from '@/types';
 
 class StoreDB extends Dexie {
@@ -32,6 +33,7 @@ class StoreDB extends Dexie {
   orderItems!: EntityTable<OrderItem, 'id'>;
   stockMovements!: EntityTable<StockMovement, 'id'>;
   creditTransactions!: EntityTable<CreditTransaction, 'id'>;
+  supplierCreditTransactions!: EntityTable<SupplierCreditTransaction, 'id'>;
   customerOrders!: EntityTable<CustomerOrder, 'id'>;
   customerOrderItems!: EntityTable<CustomerOrderItem, 'id'>;
   priceHistory!: EntityTable<PriceHistory, 'id'>;
@@ -111,6 +113,12 @@ class StoreDB extends Dexie {
       saleItems: 'id, saleId, productId, deleted, syncStatus',
       stockMovements: 'id, productId, type, date, deleted, syncStatus',
       creditTransactions: 'id, customerId, type, date, deleted, syncStatus',
+    });
+
+    this.version(15).stores({
+      suppliers: 'id, name, creditBalance, deleted, syncStatus',
+      supplierOrders: 'id, supplierId, date, status, isCredit, syncStatus',
+      supplierCreditTransactions: 'id, supplierId, type, date, orderId, deleted, syncStatus',
     });
   }
 }

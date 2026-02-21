@@ -19,6 +19,7 @@ const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(m => ({ defa
 const ExpensesPage = lazy(() => import('@/pages/ExpensesPage').then(m => ({ default: m.ExpensesPage })));
 const AuditPage = lazy(() => import('@/pages/AuditPage').then(m => ({ default: m.AuditPage })));
 const CustomerOrdersPage = lazy(() => import('@/pages/CustomerOrdersPage').then(m => ({ default: m.CustomerOrdersPage })));
+const SupplierOrdersPage = lazy(() => import('@/pages/SupplierOrdersPage').then(m => ({ default: m.SupplierOrdersPage })));
 const LowStockPage = lazy(() => import('@/pages/LowStockPage').then(m => ({ default: m.LowStockPage })));
 const ProfilePage = lazy(() => import('@/pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
 
@@ -104,6 +105,7 @@ export default function App() {
             <Route path="low-stock" element={<LowStockPage />} />
             <Route path="customers" element={<CustomersPage />} />
             <Route path="customer-orders" element={<CustomerOrdersPage />} />
+            <Route path="supplier-orders" element={<GerantRoute><SupplierOrdersPage /></GerantRoute>} />
             <Route path="suppliers" element={<GerantRoute><SuppliersPage /></GerantRoute>} />
             <Route path="expenses" element={<GerantRoute><ExpensesPage /></GerantRoute>} />
             <Route path="reports" element={<GerantRoute><ReportsPage /></GerantRoute>} />

@@ -10,6 +10,18 @@ import { logAction } from '@/services/auditService';
 import { syncAll } from '@/services/syncService';
 import { Logo } from '@/components/ui/Logo';
 
+function isOfflineLikeSyncError(message?: string): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('hors ligne')
+    || normalized.includes('offline')
+    || normalized.includes('injoignable')
+    || normalized.includes('failed to fetch')
+    || normalized.includes('networkerror')
+  );
+}
+
 export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -34,44 +46,82 @@ export function LoginPage() {
     setSyncStatus('');
 
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+      const configuredUrl = (localStorage.getItem('sync_server_url') || '').trim();
+      const serverCandidates = Array.from(new Set([configuredUrl, window.location.origin].filter(Boolean)));
 
-      if (res.ok) {
-        const data = await res.json();
+      let onlineResponse: Response | null = null;
+      let usedServerUrl = '';
+      let unauthorized = false;
+      let lastServerError = '';
+
+      for (const candidate of serverCandidates) {
+        try {
+          const attempt = await fetch(`${candidate}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+
+          if (attempt.ok) {
+            onlineResponse = attempt;
+            usedServerUrl = candidate;
+            break;
+          }
+
+          if (attempt.status === 401) {
+            unauthorized = true;
+            continue;
+          }
+
+          lastServerError = `Serveur a repondu ${attempt.status}`;
+        } catch (err) {
+          lastServerError = (err as Error).message || 'Serveur injoignable';
+        }
+      }
+
+      if (onlineResponse) {
+        const data = await onlineResponse.json();
+        if (usedServerUrl) {
+          localStorage.setItem('sync_server_url', usedServerUrl);
+        }
+
         login(data.user, data.token, data.refreshToken);
         await logAction({ action: 'connexion', entity: 'utilisateur', entityName: data.user.name });
-        setSyncStatus('Synchronisation des données…');
+
+        setSyncStatus('Synchronisation des donnees...');
         const syncResult = await syncAll({ force: true });
         if (syncResult.success) {
-          toast.success(`Connecté en ligne — ${syncResult.pulled ?? 0} enregistrements synchronisés`);
+          toast.success(`Connecte en ligne. ${syncResult.pulled ?? 0} enregistrements synchronises.`);
         } else {
-          toast.error(`Connexion en ligne mais sync échouée: ${syncResult.error}`);
+          if (!navigator.onLine || isOfflineLikeSyncError(syncResult.error)) {
+            toast.warning('Connexion reussie. Synchronisation differee (mode hors ligne).', { duration: 5000 });
+          } else {
+            toast.warning(`Connexion reussie, mais sync differee: ${syncResult.error}`, { duration: 6000 });
+          }
         }
+
         redirectAfterLogin(data.user);
         return;
       }
 
-      if (res.status === 401) {
+      if (unauthorized) {
         setError('Email ou mot de passe incorrect');
-      } else {
-        throw new Error(`Serveur a répondu ${res.status}`);
+        return;
       }
+
+      throw new Error(lastServerError || 'Serveur injoignable');
     } catch (fetchErr) {
       const reason = (fetchErr as Error).message || 'Serveur injoignable';
 
       const localUser = await db.users.where('email').equals(email).first();
 
       if (localUser && localUser.deleted) {
-        setError('Ce compte a été supprimé. Contactez le gérant.');
+        setError('Ce compte a ete supprime. Contactez le gerant.');
         return;
       }
 
       if (localUser && !localUser.active) {
-        setError('Ce compte a été désactivé. Contactez le gérant.');
+        setError('Ce compte a ete desactive. Contactez le gerant.');
         return;
       }
 
@@ -87,7 +137,7 @@ export function LoginPage() {
         if (passwordMatch) {
           login(localUser, 'offline-token', 'offline-refresh');
           await logAction({ action: 'connexion', entity: 'utilisateur', entityName: localUser.name, details: `Connexion hors-ligne: ${reason}` });
-          toast.warning('Mode hors-ligne — les données ne seront pas synchronisées', { duration: 6000 });
+          toast.warning('Mode hors-ligne - les donnees ne seront pas synchronisees', { duration: 6000 });
           redirectAfterLogin(localUser);
           return;
         }
@@ -101,7 +151,7 @@ export function LoginPage() {
         const existing = await db.users.where('email').equals(email).first();
         const userData = existing ?? {
           id: generateId(),
-          name: 'Gérant',
+          name: 'Gerant',
           email,
           role: 'gerant' as const,
           active: true,
@@ -112,13 +162,13 @@ export function LoginPage() {
         };
         if (!existing) await db.users.add(userData);
         login(userData, 'offline-token', 'offline-refresh');
-        await logAction({ action: 'connexion', entity: 'utilisateur', entityName: 'Gérant', details: `Connexion hors-ligne (défaut): ${reason}` });
-        toast.warning('Mode hors-ligne — les données ne seront pas synchronisées', { duration: 6000 });
+        await logAction({ action: 'connexion', entity: 'utilisateur', entityName: 'Gerant', details: `Connexion hors-ligne (defaut): ${reason}` });
+        toast.warning('Mode hors-ligne - les donnees ne seront pas synchronisees', { duration: 6000 });
         redirectAfterLogin(userData);
         return;
       }
 
-      setError(`Impossible de joindre le serveur (${reason}). Aucun compte local trouvé pour cet email.`);
+      setError(`Impossible de joindre le serveur (${reason}). Aucun compte local trouve pour cet email.`);
     } finally {
       setLoading(false);
     }
@@ -129,7 +179,7 @@ export function LoginPage() {
       <div className="w-full max-w-md bg-surface rounded-2xl shadow-2xl p-8">
         <div className="flex flex-col items-center mb-8">
           <Logo size="lg" variant="dark" />
-          <p className="text-text-muted mt-3">Connectez-vous à votre boutique</p>
+          <p className="text-text-muted mt-3">Connectez-vous a votre boutique</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -146,7 +196,7 @@ export function LoginPage() {
             id="password"
             label="Mot de passe"
             type="password"
-            placeholder="••••••••"
+            placeholder="********"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -162,7 +212,7 @@ export function LoginPage() {
         </form>
 
         <p className="text-xs text-text-muted text-center mt-6">
-          Fonctionne même hors connexion
+          Fonctionne meme hors connexion
         </p>
         <p className="text-[10px] text-text-muted/50 text-center mt-2">
           &copy; Djamatigui 2026

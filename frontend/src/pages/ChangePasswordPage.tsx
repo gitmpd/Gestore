@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { nowISO } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
+import { getServerUrl } from '@/services/syncService';
 
 export function ChangePasswordPage() {
   const [displayName, setDisplayName] = useState('');
@@ -44,7 +45,7 @@ export function ChangePasswordPage() {
 
     // Si token existant → envoi normal
     if (token) {
-      const res = await fetch('/api/auth/change-password', {
+      const res = await fetch(`${getServerUrl()}/api/auth/change-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -79,7 +80,7 @@ export function ChangePasswordPage() {
     // Si pas de token → première connexion, envoi de l'email
     if (!token && user?.email) {
       body.email = user.email;
-      const res = await fetch('/api/auth/change-password', {
+      const res = await fetch(`${getServerUrl()}/api/auth/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -194,3 +195,4 @@ export function ChangePasswordPage() {
     </div>
   );
 }
+

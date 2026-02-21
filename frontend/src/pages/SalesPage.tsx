@@ -13,6 +13,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { generateId, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
+import { getShopNameOrDefault } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
 import { trackDeletion } from '@/services/syncService';
 import { confirmAction } from '@/stores/confirmStore';
@@ -49,6 +50,8 @@ export function SalesPage() {
   const [saleSearch, setSaleSearch] = useState('');
   const [paymentFilter, setPaymentFilter] = useState<PaymentMethod | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState<SaleStatus | 'all'>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const allProducts = useLiveQuery(() => db.products.orderBy('name').toArray()) ?? [];
   const saleProducts = allProducts.filter((p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente');
@@ -66,6 +69,8 @@ export function SalesPage() {
     return recentSales.filter((s) => {
       if (paymentFilter !== 'all' && s.paymentMethod !== paymentFilter) return false;
       if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+      if (dateFrom && s.date < dateFrom) return false;
+      if (dateTo && s.date > dateTo + 'T23:59:59') return false;
       if (saleSearch) {
         const q = saleSearch.toLowerCase();
         const clientName = s.customerId ? customerMap.get(s.customerId)?.toLowerCase() ?? '' : '';
@@ -78,7 +83,7 @@ export function SalesPage() {
       }
       return true;
     });
-  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap]);
+  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, dateFrom, dateTo]);
 
   const filteredProducts = saleProducts.filter(
     (p) =>
@@ -362,6 +367,20 @@ export function SalesPage() {
           <option value="completed">Terminée</option>
           <option value="cancelled">Annulée</option>
         </select>
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          title="Date debut"
+        />
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          title="Date fin"
+        />
       </div>
 
       <div className="bg-surface rounded-xl border border-border">
@@ -687,7 +706,7 @@ export function SalesPage() {
                       ? customerMap.get(selectedSale.customerId)
                       : undefined,
                     vendorName: userMap.get(selectedSale.userId),
-                    shopName: localStorage.getItem('shop_name') || undefined,
+                    shopName: getShopNameOrDefault(),
                   });
                 }}
               >
@@ -700,3 +719,4 @@ export function SalesPage() {
     </div>
   );
 }
+

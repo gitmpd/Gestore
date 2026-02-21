@@ -14,6 +14,17 @@ interface SyncPayload {
   lastSyncedAt?: string;
 }
 
+function sanitizeRecordForTable(table: string, record: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...record };
+
+  // Legacy clients may still send `deleted` for users, but User model has no deleted column.
+  if (table === 'users') {
+    delete sanitized.deleted;
+  }
+
+  return sanitized;
+}
+
 const tableMap: Record<string, any> = {
   users: 'user',
   categories: 'category',
@@ -38,7 +49,14 @@ const tablesWithoutUpdatedAt = new Set(['priceHistory']);
 router.post('/', async (req: AuthRequest, res) => {
   try {
     const { changes }: { changes: SyncPayload[] } = req.body;
-    const results: Record<string, { pushed: number; deleted: number; pulled: Record<string, unknown>[] }> = {};
+    const results: Record<string, {
+      pushed: number;
+      deleted: number;
+      pulled: Record<string, unknown>[];
+      deletedIds?: string[];
+      pushedIds?: string[];
+      failedPushIds?: string[];
+    }> = {};
 
     for (const { table, records, deletions, lastSyncedAt } of changes) {
       const modelName = tableMap[table];
@@ -48,6 +66,8 @@ router.post('/', async (req: AuthRequest, res) => {
       let pushed = 0;
       let deleted = 0;
       const deletedIds: string[] = [];
+      const pushedIds: string[] = [];
+      const failedPushIds: string[] = [];
 
       try {
         if (deletions && deletions.length > 0) {
@@ -71,7 +91,9 @@ router.post('/', async (req: AuthRequest, res) => {
         }
 
         for (const record of records) {
-          const { syncStatus, lastSyncedAt: _, ...data } = record as any;
+          const { syncStatus, lastSyncedAt: _, ...rawData } = record as any;
+          const data = sanitizeRecordForTable(table, rawData as Record<string, unknown>) as Record<string, unknown> & { id?: string };
+          const recordId = typeof data.id === 'string' ? data.id : undefined;
           try {
             await model.upsert({
               where: { id: data.id },
@@ -79,7 +101,9 @@ router.post('/', async (req: AuthRequest, res) => {
               create: { ...data, syncStatus: 'synced', lastSyncedAt: new Date() },
             });
             pushed++;
+            if (recordId) pushedIds.push(recordId);
           } catch (err) {
+            if (recordId) failedPushIds.push(recordId);
             console.error(`Sync push error for ${table}:`, (err as Error).message);
           }
         }
@@ -105,12 +129,17 @@ router.post('/', async (req: AuthRequest, res) => {
           }
         } catch (err) {
           // Fallback if model has no 'deleted' field: return all records
-          pulled = await model.findMany({ where: pullWhere });
+          try {
+            pulled = await model.findMany({ where: pullWhere });
+          } catch {
+            // Final fallback for schema drift (missing updatedAt/createdAt/etc.)
+            pulled = await model.findMany();
+          }
         }
-        results[table] = { pushed, deleted, pulled, deletedIds };
+        results[table] = { pushed, deleted, pulled, deletedIds, pushedIds, failedPushIds };
       } catch (err) {
         console.error(`Sync error for table ${table}:`, (err as Error).message);
-        results[table] = { pushed, deleted, pulled: [] };
+        results[table] = { pushed, deleted, pulled: [], pushedIds, failedPushIds };
       }
     }
 

@@ -22,14 +22,28 @@ router.get('/:id', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  const product = await prisma.product.create({ data: req.body });
+  const payload = { ...(req.body ?? {}) } as Record<string, unknown>;
+  // Stock is managed by supplier receptions/returns, not by product creation.
+  delete payload.quantity;
+  delete payload.buyPrice;
+  const product = await prisma.product.create({
+    data: {
+      ...(payload as object),
+      quantity: 0,
+      buyPrice: 0,
+    } as any,
+  });
   res.status(201).json(product);
 });
 
 router.put('/:id', async (req, res) => {
+  const payload = { ...(req.body ?? {}) } as Record<string, unknown>;
+  // Prevent direct stock/cost edits through product update endpoint.
+  delete payload.quantity;
+  delete payload.buyPrice;
   const product = await prisma.product.update({
     where: { id: req.params.id },
-    data: req.body,
+    data: payload as any,
   });
   res.json(product);
 });

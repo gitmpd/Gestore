@@ -7,10 +7,23 @@ echo ============================================
 echo.
 
 if not exist "frontend\node_modules" (
-    echo [!] Les dependances ne sont pas installees.
-    echo     Lancez d'abord : install.bat
-    pause
-    exit /b 1
+    echo [!] Dependances manquantes. Installation automatique...
+    call install.bat --no-pause
+    if %errorlevel% neq 0 (
+        echo [ERREUR] Installation automatique echouee.
+        pause
+        exit /b 1
+    )
+)
+
+if not exist "backend\node_modules" (
+    echo [!] Dependances backend manquantes. Installation automatique...
+    call install.bat --no-pause
+    if %errorlevel% neq 0 (
+        echo [ERREUR] Installation automatique echouee.
+        pause
+        exit /b 1
+    )
 )
 
 if not exist "backend\.env" (

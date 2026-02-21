@@ -33,6 +33,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card, CardTitle } from '@/components/ui/Card';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { generateId, nowISO } from '@/lib/utils';
+import { getStoredShopName, saveShopName } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { discoverServers, type DiscoveredServer } from '@/services/discoveryService';
@@ -57,8 +58,7 @@ export function SettingsPage() {
   const [editForm, setEditForm] = useState({ name: '', email: '', password: '', role: 'vendeur' as UserRole });
   const [editError, setEditError] = useState('');
 
-  const [shopName, setShopName] = useState(localStorage.getItem('shop_name') || '');
-  const [shopSaved, setShopSaved] = useState(!!localStorage.getItem('shop_name'));
+  const [shopName, setShopName] = useState(getStoredShopName());
 
   const [syncing, setSyncing] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -105,6 +105,7 @@ export function SettingsPage() {
       db.orderItems,
       db.stockMovements,
       db.creditTransactions,
+      db.supplierCreditTransactions,
       db.auditLogs,
       db.expenses,
     ];
@@ -143,10 +144,10 @@ export function SettingsPage() {
     }
 
     try {
-      const syncUrl = localStorage.getItem('sync_server_url');
+      const syncUrl = localStorage.getItem('sync_server_url') || window.location.origin;
       const token = authToken || localStorage.getItem('auth_token');
 
-      if (syncUrl && token) {
+      if (token) {
         const res = await fetch(`${syncUrl}/api/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -165,12 +166,14 @@ export function SettingsPage() {
         }
 
         const created = await res.json();
+        if (!localStorage.getItem('sync_server_url')) localStorage.setItem('sync_server_url', syncUrl);
         await db.users.put({
           id: created.id,
           name: created.name,
           email: created.email,
           password: '***',
           role: created.role,
+          createdByUserId: created.createdByUserId ?? currentUser?.id,
           active: created.active ?? true,
           mustChangePassword: created.mustChangePassword ?? true,
           createdAt: created.createdAt ?? new Date().toISOString(),
@@ -187,6 +190,7 @@ export function SettingsPage() {
           email: newUser.email.trim(),
           password: hashedPassword,
           role: newUser.role,
+          createdByUserId: currentUser?.id,
           active: true,
           mustChangePassword: true,
           createdAt: now,
@@ -316,7 +320,6 @@ export function SettingsPage() {
     if (!ok) return;
 
     await db.users.update(user.id, {
-      deleted: true,
       active: false,
       updatedAt: nowISO(),
       syncStatus: 'pending',
@@ -341,10 +344,10 @@ export function SettingsPage() {
     if (!ok) return;
 
     const defaultPassword = '123456';
-    const syncUrl = localStorage.getItem('sync_server_url');
+    const syncUrl = localStorage.getItem('sync_server_url') || window.location.origin;
     const token = authToken || localStorage.getItem('auth_token');
 
-    if (syncUrl && token) {
+    if (token) {
       try {
         const res = await fetch(`${syncUrl}/api/auth/users/${user.id}/reset-password`, {
           method: 'POST',
@@ -423,7 +426,9 @@ export function SettingsPage() {
               </div>
             ) : (
               <div className="bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 text-sm p-3 rounded-lg">
-                Vous accédez en local (localhost). Pour l'accès réseau, ouvrez l'application via l'adresse IP de cet ordinateur ou lancez le backend.
+                Mode local uniquement: localhost fonctionne seulement sur ce PC.
+                <br />
+                Pour un autre appareil: lancez start-all, mettez les appareils sur le meme Wi-Fi, puis ouvrez l'adresse IP de ce PC (ex: http://192.168.1.20:5173).
               </div>
             )}
             <div className="border-t border-border pt-3 mt-3 space-y-3">
@@ -477,7 +482,7 @@ export function SettingsPage() {
         <Card>
           <CardTitle>
             <Store size={18} className="inline mr-2 -mt-0.5" />
-            Boutique  {shopName ? shopName : 'Boutique'}
+            Boutique {shopName || 'GestionStore'}
           </CardTitle>
           <div className="space-y-3 mt-4">
             <div className="flex gap-2 mt-1">
@@ -490,20 +495,17 @@ export function SettingsPage() {
               <Button
                 size="sm"
                 onClick={() => {
-                  const trimmed = shopName.trim();
-                  if (trimmed) {
-                    localStorage.setItem('shop_name', trimmed);
-                    setShopSaved(true); // on passe en mode "modifier"
-                    toast.success('Nom de la boutique enregistré');
+                  const savedName = saveShopName(shopName);
+                  if (savedName) {
+                    setShopName(savedName);
+                    toast.success('Nom de la boutique enregistree');
                   } else {
-                    localStorage.removeItem('shop_name');
-                    setShopSaved(false); // pas de boutique enregistrée
-                    toast.success('Nom de la boutique supprimé');
+                    toast.success('Nom de la boutique supprimee');
                   }
                 }}
               >
                 <Check size={16} />
-                {shopSaved ? 'Modifier' : 'Enregistrer'}
+                Enregistrer
               </Button>
             </div>
           </div>
@@ -679,7 +681,7 @@ export function SettingsPage() {
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  const syncUrl = localStorage.getItem('sync_server_url');
+                  const syncUrl = localStorage.getItem('sync_server_url') || window.location.origin;
                   const token = authToken || localStorage.getItem('auth_token');
                   if (!syncUrl || !token) {
                     toast.error('Connectez-vous d\'abord au serveur de synchronisation');
@@ -715,7 +717,7 @@ export function SettingsPage() {
                   input.onchange = async (e) => {
                     const file = (e.target as HTMLInputElement).files?.[0];
                     if (!file) return;
-                    const syncUrl = localStorage.getItem('sync_server_url');
+                    const syncUrl = localStorage.getItem('sync_server_url') || window.location.origin;
                     const token = localStorage.getItem('auth_token');
                     if (!syncUrl || !token) {
                       toast.error('Connectez-vous d\'abord au serveur de synchronisation');
@@ -997,3 +999,4 @@ export function SettingsPage() {
     </div>
   );
 }
+

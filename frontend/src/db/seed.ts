@@ -8,6 +8,32 @@ function past(daysAgo: number): string {
   return d.toISOString();
 }
 
+function cleanSeedName(raw: string): string {
+  const base = raw
+    .replace(/^\s*\d+\s*[-.)]?\s*/u, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const fixes: Array<[RegExp, string]> = [
+    [/\bMOUSTICAIE\b/giu, 'MOUSTICAIRE'],
+    [/\bPAPILLER\b/giu, 'PAPIER'],
+    [/\bVINAICRE\b/giu, 'VINAIGRE'],
+    [/\bMACORONI\b/giu, 'MACARONI'],
+    [/\bPATTES\b/giu, 'PATE'],
+    [/\bBROCHES A DENTS\b/giu, 'BROSSE A DENTS'],
+    [/\bALLUMETS\b/giu, 'ALLUMETTES'],
+    [/\bARRALONGIE\b/giu, 'RALLONGE'],
+    [/\bBEURE\b/giu, 'BEURRE'],
+    [/\bCHIGOME\b/giu, 'CHIGOMME'],
+    [/\bCARTE JOUER\b/giu, 'CARTE A JOUER'],
+    [/\bTAILLANT\b/giu, 'TAILLE-CRAYON'],
+    [/\bCORNE BÅ’UF\b/giu, 'CORNE BOEUF'],
+    [/\bCHAUSURES\b/giu, 'CHAUSSURES'],
+  ];
+
+  return fixes.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), base);
+}
+
 export async function seedTestData(userId: string) {
   const now = nowISO();
   const s = { createdAt: now, updatedAt: now, syncStatus: 'pending' as const };
@@ -178,10 +204,10 @@ export async function seedTestData(userId: string) {
 
   // Assemblage de tous les produits
   const allProducts = [
-    ...alimentationProducts.map(p => ({ ...p, id: generateId(), categoryId: catAlimentation.id, ...s })),
-    ...boissonsProducts.map(p => ({ ...p, id: generateId(), categoryId: catBoissons.id, ...s })),
-    ...menageProducts.map(p => ({ ...p, id: generateId(), categoryId: catMenage.id, ...s })),
-    ...dettesProducts.map(p => ({ ...p, id: generateId(), categoryId: catDettes.id, ...s })),
+    ...alimentationProducts.map(p => ({ ...p, name: cleanSeedName(p.name), id: generateId(), categoryId: catAlimentation.id, ...s })),
+    ...boissonsProducts.map(p => ({ ...p, name: cleanSeedName(p.name), id: generateId(), categoryId: catBoissons.id, ...s })),
+    ...menageProducts.map(p => ({ ...p, name: cleanSeedName(p.name), id: generateId(), categoryId: catMenage.id, ...s })),
+    ...dettesProducts.map(p => ({ ...p, name: cleanSeedName(p.name), id: generateId(), categoryId: catDettes.id, ...s })),
   ];
 
   await db.products.bulkAdd(allProducts);
@@ -189,24 +215,24 @@ export async function seedTestData(userId: string) {
 
   // --- Clients (avec les dettes de tes fichiers) ---
   const clients = [
-    { id: generateId(), name: 'Amadou Diallo', phone: '76 12 34 56', creditBalance: 5200, ...s },
-    { id: generateId(), name: 'Fatoumata Traoré', phone: '66 23 45 67', creditBalance: 0, ...s },
-    { id: generateId(), name: 'Moussa Konaté', phone: '78 34 56 78', creditBalance: 12000, ...s },
-    { id: generateId(), name: 'Awa Coulibaly', phone: '65 45 67 89', creditBalance: 3500, ...s },
-    { id: generateId(), name: 'Ibrahim Sanogo', phone: '76 56 78 90', creditBalance: 0, ...s },
-    { id: generateId(), name: 'Mariam Sidibé', phone: '66 67 89 01', creditBalance: 8000, ...s },
-    { id: generateId(), name: 'Oumar Keita', phone: '78 78 90 12', creditBalance: 0, ...s },
-    { id: generateId(), name: 'Kadiatou Bah', phone: '65 89 01 23', creditBalance: 1500, ...s },
-    { id: generateId(), name: 'Ali', phone: '76 11 22 33', creditBalance: 1400, ...s },
-    { id: generateId(), name: 'Camara', phone: '76 44 55 66', creditBalance: 1100, ...s },
+    { id: generateId(), name: cleanSeedName('Amadou Diallo'), phone: '76 12 34 56', creditBalance: 5200, ...s },
+    { id: generateId(), name: cleanSeedName('Fatoumata Traore'), phone: '66 23 45 67', creditBalance: 0, ...s },
+    { id: generateId(), name: cleanSeedName('Moussa Konate'), phone: '78 34 56 78', creditBalance: 12000, ...s },
+    { id: generateId(), name: cleanSeedName('Awa Coulibaly'), phone: '65 45 67 89', creditBalance: 3500, ...s },
+    { id: generateId(), name: cleanSeedName('Ibrahim Sanogo'), phone: '76 56 78 90', creditBalance: 0, ...s },
+    { id: generateId(), name: cleanSeedName('Mariam Sidibe'), phone: '66 67 89 01', creditBalance: 8000, ...s },
+    { id: generateId(), name: cleanSeedName('Oumar Keita'), phone: '78 78 90 12', creditBalance: 0, ...s },
+    { id: generateId(), name: cleanSeedName('Kadiatou Bah'), phone: '65 89 01 23', creditBalance: 1500, ...s },
+    { id: generateId(), name: cleanSeedName('Ali'), phone: '76 11 22 33', creditBalance: 1400, ...s },
+    { id: generateId(), name: cleanSeedName('Camara'), phone: '76 44 55 66', creditBalance: 1100, ...s },
   ];
   await db.customers.bulkAdd(clients);
 
   // --- Fournisseurs ---
   const suppliers = [
-    { id: generateId(), name: 'Grossiste Bamako Central', phone: '20 22 33 44', address: 'Marché de Medine, Bamako', ...s },
-    { id: generateId(), name: 'SODIBAF Distribution', phone: '20 33 44 55', address: 'Zone Industrielle, Bamako', ...s },
-    { id: generateId(), name: 'Sahelienne Import', phone: '20 44 55 66', address: 'Badalabougou, Bamako', ...s },
+    { id: generateId(), name: cleanSeedName('Grossiste Bamako Central'), phone: '20 22 33 44', address: 'Marche de Medine, Bamako', ...s },
+    { id: generateId(), name: cleanSeedName('SODIBAF Distribution'), phone: '20 33 44 55', address: 'Zone Industrielle, Bamako', ...s },
+    { id: generateId(), name: cleanSeedName('Sahelienne Import'), phone: '20 44 55 66', address: 'Badalabougou, Bamako', ...s },
   ];
   await db.suppliers.bulkAdd(suppliers);
 
@@ -226,3 +252,4 @@ export async function seedTestData(userId: string) {
 
   console.log('Seed terminé avec succès !');
 }
+

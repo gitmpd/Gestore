@@ -41,17 +41,26 @@ interface OrderLine {
   unitPrice: number;
 }
 
+interface CustomerOrderView extends CustomerOrder {
+  customerName: string;
+  effectivePaymentMethod?: PaymentMethod;
+}
+
 export function CustomerOrdersPage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<CustomerOrderStatus | 'all'>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'credit' | 'non_credit'>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [deliverModalOpen, setDeliverModalOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
 
   const [customerId, setCustomerId] = useState('');
   const [deposit, setDeposit] = useState(0);
+  const [createPaymentMethod, setCreatePaymentMethod] = useState<PaymentMethod>('cash');
   const [note, setNote] = useState('');
   const [orderLines, setOrderLines] = useState<OrderLine[]>([]);
 
@@ -59,7 +68,7 @@ export function CustomerOrdersPage() {
   const [deliverPaymentMethod, setDeliverPaymentMethod] = useState<PaymentMethod>('cash');
   const [deliverOrder, setDeliverOrder] = useState<CustomerOrder | null>(null);
 
-  const [detailOrder, setDetailOrder] = useState<CustomerOrder | null>(null);
+  const [detailOrder, setDetailOrder] = useState<CustomerOrderView | null>(null);
   const [detailItems, setDetailItems] = useState<{ productName: string; quantity: number; unitPrice: number; total: number }[]>([]);
 
   const customers = useLiveQuery(() => db.customers.orderBy('name').toArray()) ?? [];
@@ -72,14 +81,23 @@ export function CustomerOrdersPage() {
   const allUsers = useLiveQuery(async () => (await db.users.toArray()).filter((u) => !u.deleted)) ?? [];
   const userMap = new Map(allUsers.map((u) => [u.id, u.name]));
 
-  const orders = useLiveQuery(async () => {
+  const orders = useLiveQuery(async (): Promise<CustomerOrderView[]> => {
     const all = await db.customerOrders.orderBy('date').reverse().toArray();
     const customerMap = new Map((await db.customers.toArray()).map((c) => [c.id, c.name]));
-    return all.map((o) => ({ ...o, customerName: customerMap.get(o.customerId) || '—' }));
+    const saleMap = new Map((await db.sales.toArray()).map((s) => [s.id, s.paymentMethod]));
+    return all.map((o) => ({
+      ...o,
+      customerName: customerMap.get(o.customerId) || '—',
+      effectivePaymentMethod: o.paymentMethod ?? (o.saleId ? saleMap.get(o.saleId) : undefined),
+    }));
   }) ?? [];
 
   const filteredOrders = orders.filter((o) => {
     if (statusFilter !== 'all' && o.status !== statusFilter) return false;
+    if (paymentFilter === 'credit' && o.effectivePaymentMethod !== 'credit') return false;
+    if (paymentFilter === 'non_credit' && (!o.effectivePaymentMethod || o.effectivePaymentMethod === 'credit')) return false;
+    if (dateFrom && o.date < dateFrom) return false;
+    if (dateTo && o.date > dateTo + 'T23:59:59') return false;
     if (search) {
       const q = search.toLowerCase();
       return (
@@ -95,6 +113,7 @@ export function CustomerOrdersPage() {
   const openCreate = () => {
     setCustomerId('');
     setDeposit(0);
+    setCreatePaymentMethod('cash');
     setNote('');
     setOrderLines([]);
     setCreateModalOpen(true);
@@ -136,6 +155,7 @@ export function CustomerOrdersPage() {
       date: now,
       total: orderTotal,
       deposit: deposit || 0,
+      paymentMethod: createPaymentMethod,
       status: 'en_attente',
       note: note || undefined,
       userId: user.id,
@@ -165,7 +185,7 @@ export function CustomerOrdersPage() {
       entity: 'commande_client',
       entityId: orderId,
       entityName: customer?.name,
-      details: `${orderLines.length} article(s) — ${formatCurrency(orderTotal)}${deposit > 0 ? ` — Acompte: ${formatCurrency(deposit)}` : ''}`,
+      details: `${orderLines.length} article(s) â€” ${formatCurrency(orderTotal)} â€” ${paymentLabels[createPaymentMethod]}${deposit > 0 ? ` â€” Acompte: ${formatCurrency(deposit)}` : ''}`,
     });
 
     setCreateModalOpen(false);
@@ -175,7 +195,7 @@ export function CustomerOrdersPage() {
   const openDeliver = (order: CustomerOrder) => {
     setDeliverOrder(order);
     setDeliverOrderId(order.id);
-    setDeliverPaymentMethod('cash');
+    setDeliverPaymentMethod(order.paymentMethod ?? 'cash');
     setDeliverModalOpen(true);
   };
 
@@ -268,6 +288,7 @@ export function CustomerOrdersPage() {
     await db.customerOrders.update(deliverOrder.id, {
       status: 'livree',
       saleId,
+      paymentMethod: deliverPaymentMethod,
       updatedAt: now,
       syncStatus: 'pending',
     });
@@ -278,13 +299,13 @@ export function CustomerOrdersPage() {
       entity: 'commande_client',
       entityId: deliverOrder.id,
       entityName: customer?.name,
-      details: `Commande #${deliverOrder.id.slice(0, 8)} — ${formatCurrency(deliverOrder.total)} — ${paymentLabels[deliverPaymentMethod]}${deliverOrder.deposit > 0 ? ` — Acompte: ${formatCurrency(deliverOrder.deposit)}` : ''}`,
+      details: `Commande #${deliverOrder.id.slice(0, 8)} â€” ${formatCurrency(deliverOrder.total)} â€” ${paymentLabels[deliverPaymentMethod]}${deliverOrder.deposit > 0 ? ` â€” Acompte: ${formatCurrency(deliverOrder.deposit)}` : ''}`,
     });
 
     setDeliverModalOpen(false);
   };
 
-  const handleCancel = async (order: CustomerOrder & { customerName: string }) => {
+  const handleCancel = async (order: CustomerOrderView) => {
     const ok = await confirmAction({
       title: 'Annuler la commande',
       message: `Annuler la commande #${order.id.slice(0, 8)} de ${order.customerName} (${formatCurrency(order.total)}) ?${order.deposit > 0 ? `\n\nUn acompte de ${formatCurrency(order.deposit)} avait été versé.` : ''}`,
@@ -305,11 +326,11 @@ export function CustomerOrdersPage() {
       entity: 'commande_client',
       entityId: order.id,
       entityName: order.customerName,
-      details: `Commande #${order.id.slice(0, 8)} — ${formatCurrency(order.total)}${order.deposit > 0 ? ` — Acompte: ${formatCurrency(order.deposit)}` : ''}`,
+      details: `Commande #${order.id.slice(0, 8)} â€” ${formatCurrency(order.total)}${order.deposit > 0 ? ` â€” Acompte: ${formatCurrency(order.deposit)}` : ''}`,
     });
   };
 
-  const openDetail = async (order: CustomerOrder & { customerName: string }) => {
+  const openDetail = async (order: CustomerOrderView) => {
     const items = await db.customerOrderItems
       .where('customerOrderId')
       .equals(order.id)
@@ -363,6 +384,30 @@ export function CustomerOrdersPage() {
             </button>
           ))}
         </div>
+        <select
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={paymentFilter}
+          onChange={(e) => setPaymentFilter(e.target.value as 'all' | 'credit' | 'non_credit')}
+          title="Filtre paiement"
+        >
+          <option value="all">Tous paiements</option>
+          <option value="credit">Crédit</option>
+          <option value="non_credit">Hors crédit</option>
+        </select>
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          title="Date debut"
+        />
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          title="Date fin"
+        />
       </div>
 
       <div className="bg-surface rounded-xl border border-border">
@@ -375,6 +420,7 @@ export function CustomerOrdersPage() {
               <Th>Date</Th>
               <Th>Total</Th>
               <Th>Acompte</Th>
+              <Th>Paiement</Th>
               <Th>Statut</Th>
               <Th />
             </Tr>
@@ -382,7 +428,7 @@ export function CustomerOrdersPage() {
           <Tbody>
             {filteredOrders.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 8 : 7} className="text-center text-text-muted py-8">
+                <Td colSpan={isGerant ? 9 : 8} className="text-center text-text-muted py-8">
                   Aucune commande trouvée
                 </Td>
               </Tr>
@@ -392,7 +438,7 @@ export function CustomerOrdersPage() {
                   <Td className="font-mono text-xs">#{o.id.slice(0, 8)}</Td>
                   <Td className="font-medium">{o.customerName}</Td>
                   {isGerant && (
-                    <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? '—' : '—'}</Td>
+                    <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? 'â€”' : 'â€”'}</Td>
                   )}
                   <Td className="text-text-muted">{formatDate(o.date)}</Td>
                   <Td className="font-semibold">{formatCurrency(o.total)}</Td>
@@ -400,7 +446,16 @@ export function CustomerOrdersPage() {
                     {o.deposit > 0 ? (
                       <span className="text-emerald-600 font-medium">{formatCurrency(o.deposit)}</span>
                     ) : (
-                      <span className="text-text-muted">—</span>
+                      <span className="text-text-muted">â€”</span>
+                    )}
+                  </Td>
+                  <Td>
+                    {o.effectivePaymentMethod ? (
+                      <Badge variant={o.effectivePaymentMethod === 'credit' ? 'danger' : 'success'}>
+                        {paymentLabels[o.effectivePaymentMethod]}
+                      </Badge>
+                    ) : (
+                      <span className="text-text-muted">â€”</span>
                     )}
                   </Td>
                   <Td>
@@ -480,7 +535,7 @@ export function CustomerOrdersPage() {
                     options={saleProducts.map((p) => ({
                       value: p.id,
                       label: p.name,
-                      sublabel: `${formatCurrency(p.sellPrice)} — Stock: ${p.quantity}`,
+                      sublabel: `${formatCurrency(p.sellPrice)} â€” Stock: ${p.quantity}`,
                     }))}
                     value={line.productId}
                     onChange={(val) => updateLine(i, 'productId', val)}
@@ -521,6 +576,25 @@ export function CustomerOrdersPage() {
               <div className="flex justify-between text-sm">
                 <span className="text-text-muted">Total</span>
                 <span className="font-bold text-lg text-text">{formatCurrency(orderTotal)}</span>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text mb-2">Mode de paiement</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(Object.keys(paymentLabels) as PaymentMethod[]).map((pm) => (
+                    <button
+                      key={pm}
+                      type="button"
+                      onClick={() => setCreatePaymentMethod(pm)}
+                      className={`py-2 rounded-lg text-sm font-medium border transition-colors ${
+                        createPaymentMethod === pm
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {paymentLabels[pm]}
+                    </button>
+                  ))}
+                </div>
               </div>
               <Input
                 id="deposit"
@@ -627,7 +701,7 @@ export function CustomerOrdersPage() {
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <span className="text-text-muted">Client</span>
-                <p className="font-medium text-text">{customers.find((c) => c.id === detailOrder.customerId)?.name ?? '—'}</p>
+                <p className="font-medium text-text">{customers.find((c) => c.id === detailOrder.customerId)?.name ?? 'â€”'}</p>
               </div>
               <div>
                 <span className="text-text-muted">Date</span>
@@ -636,6 +710,12 @@ export function CustomerOrdersPage() {
               <div>
                 <span className="text-text-muted">Statut</span>
                 <p><Badge variant={statusVariants[detailOrder.status]}>{statusLabels[detailOrder.status]}</Badge></p>
+              </div>
+              <div>
+                <span className="text-text-muted">Paiement</span>
+                <p className="font-medium text-text">
+                  {detailOrder.effectivePaymentMethod ? paymentLabels[detailOrder.effectivePaymentMethod] : 'â€”'}
+                </p>
               </div>
               <div>
                 <span className="text-text-muted">Total</span>
