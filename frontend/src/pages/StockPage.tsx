@@ -99,12 +99,15 @@ export function StockPage() {
     if (!product) return;
 
     const now = nowISO();
+    const previousQty = product.quantity;
     let newQty = product.quantity;
     if (type === 'retour') {
       newQty += quantity;
     } else {
-      if (quantity > product.quantity) {
-        toast.error(`Ajustement invalide: la nouvelle quantite (${quantity}) ne peut pas depasser le stock actuel (${product.quantity}).`);
+      if (quantity > product.quantity && !isGerant) {
+        toast.error(
+          `Ajustement invalide: seul le gerant peut augmenter le stock (${product.quantity} -> ${quantity}).`
+        );
         return;
       }
       newQty = quantity;
@@ -131,12 +134,17 @@ export function StockPage() {
     });
 
     const typeLabel = typeLabels[type];
+    const delta = newQty - previousQty;
+    const deltaLabel = delta > 0 ? `+${delta}` : `${delta}`;
     await logAction({
       action: 'mouvement_stock',
       entity: 'stock',
       entityId: productId,
       entityName: product.name,
-      details: `${typeLabel} de ${quantity} unités — ${reason}`,
+      details:
+        type === 'ajustement'
+          ? `${typeLabel}: ${previousQty} -> ${newQty} (${deltaLabel}) - ${reason}`
+          : `${typeLabel}: +${quantity} (${previousQty} -> ${newQty}) - ${reason}`,
     });
 
     setModalOpen(false);
@@ -272,7 +280,7 @@ export function StockPage() {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <p className="text-xs text-text-muted">
-            Entrée et sortie sont automatiques (réception commande fournisseur et ventes). Ici: retour client, ou ajustement sans augmentation de stock.
+            Entrée et sortie sont automatiques (réception commande fournisseur et ventes). Ici: retour client, ou ajustement manuel (hausse autorisee uniquement pour le gerant).
           </p>
           <div className="flex flex-col gap-1">
             <label className="text-sm font-medium text-text">Type</label>
@@ -311,7 +319,7 @@ export function StockPage() {
 
           <Input
             id="qty"
-            label={type === 'ajustement' ? 'Nouvelle quantité' : 'Quantité'}
+            label={type === 'ajustement' ? 'Nouvelle quantite reelle' : 'Quantite'}
             type="number"
             min={0}
             value={quantity}
@@ -339,4 +347,6 @@ export function StockPage() {
     </div>
   );
 }
+
+
 

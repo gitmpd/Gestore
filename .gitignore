@@ -13,3 +13,4 @@ dist-ssr/
 *.swo
 *.tsbuildinfo
 coverage/
+.gestionstore-processes.json

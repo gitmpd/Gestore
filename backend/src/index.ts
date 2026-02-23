@@ -23,7 +23,53 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(helmet());
-app.use(cors());
+
+const configuredOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+function isPrivateNetworkHost(hostname: string): boolean {
+  const parts = hostname.split('.').map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => Number.isNaN(p))) return false;
+  return (
+    parts[0] === 10
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168)
+  );
+}
+
+function isAllowedOrigin(origin: string): boolean {
+  if (configuredOrigins.length > 0) {
+    return configuredOrigins.includes(origin);
+  }
+
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+    return host === 'localhost'
+      || host === '127.0.0.1'
+      || host === '::1'
+      || isPrivateNetworkHost(host);
+  } catch {
+    return false;
+  }
+}
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Origin non autorisee par CORS'));
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const loginLimiter = rateLimit({

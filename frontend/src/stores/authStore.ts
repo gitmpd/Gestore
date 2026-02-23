@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { User, UserRole } from '@/types';
+import { clearSessionActivity, writeSessionActivityAt } from '@/lib/session';
 
 interface AuthState {
   user: Omit<User, 'password'> | null;
@@ -23,17 +24,21 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       mustChangePassword: false,
 
-      login: (user, token, refreshToken) =>
+      login: (user, token, refreshToken) => {
+        writeSessionActivityAt(Date.now());
         set({
           user,
           token,
           refreshToken,
           isAuthenticated: true,
           mustChangePassword: !!user.mustChangePassword,
-        }),
+        });
+      },
 
-      logout: () =>
-        set({ user: null, token: null, refreshToken: null, isAuthenticated: false, mustChangePassword: false }),
+      logout: () => {
+        clearSessionActivity();
+        set({ user: null, token: null, refreshToken: null, isAuthenticated: false, mustChangePassword: false });
+      },
 
       hasRole: (role) => get().user?.role === role,
 

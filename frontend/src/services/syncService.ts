@@ -3,7 +3,6 @@ import { useAuthStore } from '@/stores/authStore';
 import { v4 as uuidv4 } from 'uuid';
 
 const TABLES = [
-  'users',
   'categories',
   'products',
   'customers',

@@ -190,7 +190,7 @@ export function AuditPage() {
     }
 
     if (log.action === 'vente') {
-      return `Le ${date}, ${log.userName} a enregistré une vente${details ? ` (${details})` : ''}.`;
+      return `Le ${date}, ${log.userName} a enregistré une vente ${details ? ` (${details})` : ''}.`;
     }
 
     const action = (actionLabels[log.action] ?? log.action).toLowerCase();
