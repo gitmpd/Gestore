@@ -17,6 +17,7 @@ export function LowStockPage() {
   const currentUser = useAuthStore((s) => s.user);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<StockFilter>('all');
+  const [methodModalOpen, setMethodModalOpen] = useState(false);
   const [reorderModalOpen, setReorderModalOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [supplierId, setSupplierId] = useState('');
@@ -77,6 +78,11 @@ export function LowStockPage() {
     { key: 'ok', label: 'Suffisant', count: okCount },
   ];
 
+  const openMethodModal = (product: Product) => {
+    setSelectedProduct(product);
+    setMethodModalOpen(true);
+  };
+
   const openReorderModal = (product: Product) => {
     setSelectedProduct(product);
     setSupplierId(suppliers[0]?.id ?? '');
@@ -85,6 +91,18 @@ export function LowStockPage() {
     setReceiveNow(false);
     setPaymentMode('cash');
     setReorderModalOpen(true);
+  };
+
+  const handleChooseSupplierOrder = () => {
+    if (!selectedProduct) return;
+    setMethodModalOpen(false);
+    openReorderModal(selectedProduct);
+  };
+
+  const handleChooseManualStockMovement = () => {
+    if (!selectedProduct) return;
+    setMethodModalOpen(false);
+    navigate(`/stock?product=${selectedProduct.id}`);
   };
 
   const handleCreateSupplierOrder = async (e: FormEvent) => {
@@ -276,7 +294,7 @@ export function LowStockPage() {
             return (
               <button
                 key={product.id}
-                onClick={() => openReorderModal(product)}
+                onClick={() => openMethodModal(product)}
                 className={`rounded-xl border p-5 ${level.bg} transition-all duration-200 hover:shadow-lg hover:-translate-y-1 cursor-pointer text-left group`}
               >
                 <div className="flex items-start justify-between mb-3">
@@ -333,6 +351,46 @@ export function LowStockPage() {
           })}
         </div>
       )}
+
+      <Modal
+        open={methodModalOpen}
+        onClose={() => setMethodModalOpen(false)}
+        title={`Approvisionnement: ${selectedProduct?.name ?? ''}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            Choisissez la methode d'approvisionnement pour ce produit.
+          </p>
+
+          <button
+            type="button"
+            onClick={handleChooseSupplierOrder}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Commande fournisseur</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Creer une commande d'achat (en attente ou recue immediatement).
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleChooseManualStockMovement}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Retour client et ajustement</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Ouvrir le formulaire des mouvements de stock.
+            </p>
+          </button>
+
+          <div className="flex justify-end pt-2">
+            <Button variant="secondary" type="button" onClick={() => setMethodModalOpen(false)}>
+              Fermer
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={reorderModalOpen}

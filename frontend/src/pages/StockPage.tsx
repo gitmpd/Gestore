@@ -58,8 +58,12 @@ export function StockPage() {
 
   useEffect(() => {
     const preselect = searchParams.get('product');
+    const preselectType = searchParams.get('type');
     if (preselect) {
       setProductId(preselect);
+      if (preselectType === 'retour' || preselectType === 'ajustement') {
+        setType(preselectType);
+      }
       setModalOpen(true);
       setSearchParams({}, { replace: true });
     }

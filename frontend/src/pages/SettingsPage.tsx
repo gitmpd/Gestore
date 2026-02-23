@@ -203,7 +203,7 @@ export function SettingsPage() {
       setNewUser({ name: '', email: '', password: '', role: 'vendeur' });
       setUserModalOpen(false);
       toast.success('Utilisateur créé avec succès');
-    } catch (err) {
+    } catch {
       toast.error('Erreur lors de la création du vendeur');
       setUserError('Erreur lors de la création du vendeur');
     }
