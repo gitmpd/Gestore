@@ -18,6 +18,7 @@ const TABLES = [
   'customerOrders',
   'customerOrderItems',
   'priceHistory',
+  'supplierCreditTransactions',
 ] as const;
 
 type TableName = (typeof TABLES)[number];

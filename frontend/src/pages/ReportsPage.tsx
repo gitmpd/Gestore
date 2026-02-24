@@ -660,7 +660,7 @@ export function ReportsPage() {
         onClose={() => setDetailModalKey(null)}
         title={
           detailModalKey === 'revenue'
-            ? 'Detail des entrees de tresorerie'
+            ? 'Detail des entrées de tresorerie'
             : detailModalKey === 'grossProfit'
             ? 'Detail de la marge brute'
             : detailModalKey === 'expenses'
@@ -675,9 +675,9 @@ export function ReportsPage() {
         {detailModalKey === 'revenue' && (
           <div className="space-y-2 text-sm">
             <p className="font-semibold text-text">Total: {formatCurrency(totalRevenue)}</p>
-            <p className="text-text-muted">Ventes encaissees: {cashSalesCount} vente(s) ({formatCurrency(totalSalesRevenue)})</p>
+            <p className="text-text-muted">Ventes encaissées: {cashSalesCount} vente(s) ({formatCurrency(totalSalesRevenue)})</p>
             <p className="text-text-muted">Remboursements credits clients: {filteredCustomerCreditPayments.length} operation(s) ({formatCurrency(totalCustomerCreditPayments)})</p>
-            <p className="text-text-muted">Entrees commandes clients: {customerOrderCashEntries.length} operation(s) ({formatCurrency(totalCustomerOrderEntries)})</p>
+            <p className="text-text-muted">Entrées commandes clients: {customerOrderCashEntries.length} operation(s) ({formatCurrency(totalCustomerOrderEntries)})</p>
           </div>
         )}
         {detailModalKey === 'grossProfit' && (
@@ -690,13 +690,13 @@ export function ReportsPage() {
           <div className="space-y-2 text-sm">
             <p className="font-semibold text-text">Total: {formatCurrency(totalExpenses)}</p>
             <p className="text-text-muted">Depenses manuelles: {formatCurrency(totalManualExpenses)}</p>
-            <p className="text-text-muted">Commandes fournisseurs payees: {formatCurrency(totalSupplierPayments)}</p>
+            <p className="text-text-muted">Commandes fournisseurs payées: {formatCurrency(totalSupplierPayments)}</p>
           </div>
         )}
         {detailModalKey === 'net' && (
           <div className="space-y-2 text-sm">
             <p className="font-semibold text-text">Resultat net: {formatCurrency(netProfitSimple)}</p>
-            <p className="text-text-muted">Calcul: Entrees de tresorerie ({formatCurrency(totalRevenue)}) - Sorties de tresorerie ({formatCurrency(totalExpenses)}).</p>
+            <p className="text-text-muted">Calcul: Entrées de tresorerie ({formatCurrency(totalRevenue)}) - Sorties de tresorerie ({formatCurrency(totalExpenses)}).</p>
           </div>
         )}
         {detailModalKey === 'customerCredits' && (
@@ -704,7 +704,7 @@ export function ReportsPage() {
             <div className="space-y-2">
               <p className="font-semibold text-text">Total du: {formatCurrency(totalCredit)}</p>
               <p className="text-text-muted">Clients debiteurs: {customersWhoOwe.length}</p>
-              <p className="text-text-muted">Credits crees sur la periode: {filteredCustomerCredits.length}</p>
+              <p className="text-text-muted">Credits crées sur la periode: {filteredCustomerCredits.length}</p>
               <p className="text-text-muted">Remboursements sur la periode: {filteredCustomerCreditPayments.length}</p>
             </div>
             <Button size="sm" variant="secondary" onClick={() => { setDetailModalKey(null); openCreditList('customers'); }}>
@@ -717,8 +717,8 @@ export function ReportsPage() {
             <div className="space-y-2">
               <p className="font-semibold text-text">Total du: {formatCurrency(totalSupplierCredit)}</p>
               <p className="text-text-muted">Fournisseurs a payer: {suppliersToPay.length}</p>
-              <p className="text-text-muted">Credits fournisseurs crees: {filteredSupplierCredits.length}</p>
-              <p className="text-text-muted">Paiements effectues: {filteredSupplierPayments.length}</p>
+              <p className="text-text-muted">Credits fournisseurs crées: {filteredSupplierCredits.length}</p>
+              <p className="text-text-muted">Paiements effectués: {filteredSupplierPayments.length}</p>
             </div>
             <Button size="sm" variant="secondary" onClick={() => { setDetailModalKey(null); openCreditList('suppliers'); }}>
               Voir la liste des fournisseurs
@@ -727,7 +727,7 @@ export function ReportsPage() {
         )}
       </Modal>
       <Card>
-        <CardTitle>Entrees/sorties d'argent par jour</CardTitle>
+        <CardTitle>Entrées/sorties d'argent par jour</CardTitle>
         {salesByDay.length === 0 ? (
           <p className="text-text-muted text-sm py-8 text-center">Aucune donnée pour cette période</p>
         ) : (
@@ -756,7 +756,7 @@ export function ReportsPage() {
             <div className="rounded-lg border border-border bg-surface/60 p-2">
               <div className="grid grid-cols-3 gap-2 px-1 pb-1 text-[11px] font-semibold text-text-muted">
                 <span>Jour</span>
-                <span className="text-right">Entrees</span>
+                <span className="text-right">Entrées</span>
                 <span className="text-right">Sorties</span>
               </div>
               <div className="max-h-36 overflow-y-auto space-y-1 pr-1">

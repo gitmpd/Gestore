@@ -46,7 +46,7 @@ function Ensure-Prerequisites {
   }
 
   if (-not (Test-Tool 'npm')) {
-    throw 'npm est introuvable meme apres installation de Node.js.'
+    throw 'npm est introuvable meme après installation de Node.js.'
   }
 
   if (-not (Test-Tool 'psql')) {

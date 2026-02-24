@@ -207,7 +207,7 @@ router.patch('/orders/:orderId/deliver', async (req: AuthRequest, res) => {
             saleId: sale.id,
             amount: remaining,
             type: 'credit',
-            note: `Commande client #${order.id.slice(0, 8)} (reste apres acompte)`,
+            note: `Commande client #${order.id} (reste après acompte)`,
           },
         });
       }

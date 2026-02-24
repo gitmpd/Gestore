@@ -409,7 +409,7 @@ async function main() {
         type: 'entree',
         quantity: item.qty,
         date: order1Date,
-        reason: `Réception commande #${order1Id.slice(0, 8)}`,
+        reason: `Réception commande #${order1Id}`,
       },
     });
   }

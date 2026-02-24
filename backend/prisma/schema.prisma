@@ -70,6 +70,7 @@ model User {
   createdBy          User?      @relation("UserCreator", fields: [createdByUserId], references: [id])
   createdUsers       User[]     @relation("UserCreator")
   sales              Sale[]
+  @@index([syncStatus])
 }
 
 model Category {
@@ -81,6 +82,7 @@ model Category {
   syncStatus   SyncStatus @default(synced)
   lastSyncedAt DateTime?
   products     Product[]
+  @@index([syncStatus])
 }
 
 model Product {
@@ -104,6 +106,9 @@ model Product {
   orderItems         OrderItem[]
   customerOrderItems CustomerOrderItem[]
   priceHistory       PriceHistory[]
+  @@index([categoryId])
+  @@index([deleted])
+  @@index([syncStatus])
 }
 
 model PriceHistory {
@@ -119,6 +124,7 @@ model PriceHistory {
   syncStatus   SyncStatus @default(synced)
   lastSyncedAt DateTime?
   product      Product    @relation(fields: [productId], references: [id])
+  @@index([syncStatus])
 }
 
 model Customer {
@@ -134,6 +140,7 @@ model Customer {
   sales              Sale[]
   creditTransactions CreditTransaction[]
   customerOrders     CustomerOrder[]
+  @@index([syncStatus])
 }
 
 model Supplier {
@@ -141,12 +148,15 @@ model Supplier {
   name         String
   phone        String
   address      String          @default("")
+  creditBalance Float          @default(0)
   deleted      Boolean         @default(false)
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
   syncStatus   SyncStatus      @default(synced)
   lastSyncedAt DateTime?
   orders       SupplierOrder[]
+  supplierCreditTransactions SupplierCreditTransaction[]
+  @@index([syncStatus])
 }
 
 model Sale {
@@ -166,6 +176,11 @@ model Sale {
   customer      Customer?     @relation(fields: [customerId], references: [id])
   items         SaleItem[]
   customerOrder CustomerOrder?
+  @@index([userId])
+  @@index([customerId])
+  @@index([date])
+  @@index([deleted])
+  @@index([syncStatus])
 }
 
 model SaleItem {
@@ -183,6 +198,7 @@ model SaleItem {
   lastSyncedAt DateTime?
   sale         Sale       @relation(fields: [saleId], references: [id])
   product      Product    @relation(fields: [productId], references: [id])
+  @@index([syncStatus])
 }
 
 model SupplierOrder {
@@ -191,6 +207,7 @@ model SupplierOrder {
   date         DateTime    @default(now())
   total        Float
   status       OrderStatus @default(en_attente)
+  paymentMethod PaymentMethod
   userId       String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -199,6 +216,7 @@ model SupplierOrder {
   lastSyncedAt DateTime?
   supplier     Supplier    @relation(fields: [supplierId], references: [id])
   items        OrderItem[]
+  @@index([syncStatus])
 }
 
 model OrderItem {
@@ -216,6 +234,7 @@ model OrderItem {
   lastSyncedAt DateTime?
   order        SupplierOrder @relation(fields: [orderId], references: [id])
   product      Product       @relation(fields: [productId], references: [id])
+  @@index([syncStatus])
 }
 
 model StockMovement {
@@ -233,6 +252,7 @@ model StockMovement {
   syncStatus   SyncStatus        @default(synced)
   lastSyncedAt DateTime?
   product      Product           @relation(fields: [productId], references: [id])
+  @@index([syncStatus])
 }
 
 model CreditTransaction {
@@ -249,6 +269,7 @@ model CreditTransaction {
   syncStatus   SyncStatus @default(synced)
   lastSyncedAt DateTime?
   customer     Customer   @relation(fields: [customerId], references: [id])
+  @@index([syncStatus])
 }
 
 model AuditLog {
@@ -265,6 +286,7 @@ model AuditLog {
   updatedAt    DateTime   @updatedAt
   syncStatus   SyncStatus @default(synced)
   lastSyncedAt DateTime?
+  @@index([syncStatus])
 }
 
 model Expense {
@@ -280,6 +302,7 @@ model Expense {
   updatedAt    DateTime   @updatedAt
   syncStatus   SyncStatus @default(synced)
   lastSyncedAt DateTime?
+  @@index([syncStatus])
 }
 
 model CustomerOrder {
@@ -288,6 +311,7 @@ model CustomerOrder {
   date         DateTime            @default(now())
   total        Float
   deposit      Float               @default(0)
+  paymentMethod PaymentMethod?
   status       CustomerOrderStatus @default(en_attente)
   saleId       String?             @unique
   note         String?
@@ -300,6 +324,7 @@ model CustomerOrder {
   customer     Customer            @relation(fields: [customerId], references: [id])
   sale         Sale?               @relation(fields: [saleId], references: [id])
   items        CustomerOrderItem[]
+  @@index([syncStatus])
 }
 
 model CustomerOrderItem {
@@ -317,4 +342,34 @@ model CustomerOrderItem {
   lastSyncedAt    DateTime?
   customerOrder   CustomerOrder @relation(fields: [customerOrderId], references: [id])
   product         Product       @relation(fields: [productId], references: [id])
+  @@index([syncStatus])
+}
+
+model SupplierCreditTransaction {
+  id           String     @id @default(uuid())
+  supplierId   String
+  orderId      String?
+  amount       Float
+  type         String     // "credit" | "payment"
+  date         DateTime   @default(now())
+  note         String?
+  deleted      Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  syncStatus   SyncStatus @default(synced)
+  lastSyncedAt DateTime?
+
+  supplier     Supplier   @relation(fields: [supplierId], references: [id])
+  @@index([syncStatus])
+}
+
+model SyncDeletion {
+  id        String   @id @default(uuid())
+  table     String
+  recordId  String
+  deletedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  @@unique([table, recordId])
+  @@index([deletedAt])
 }

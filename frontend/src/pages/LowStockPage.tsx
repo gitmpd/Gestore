@@ -190,7 +190,7 @@ export function LowStockPage() {
         type: 'entree',
         quantity: orderQty,
         date: now,
-        reason: `Réception commande fournisseur #${orderId.slice(0, 8)}`,
+        reason: `Réception commande fournisseur #${orderId}`,
         userId: currentUser?.id,
         createdAt: now,
         updatedAt: now,

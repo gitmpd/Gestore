@@ -32,7 +32,7 @@ const statusVariants: Record<OrderStatus, 'warning' | 'success' | 'danger'> = {
 const emptySupplier = (): Partial<Supplier> => ({
   name: '',
   phone: '',
-  address: '',
+  address: '',  // ← Chaîne vide au lieu de undefined
   creditBalance: 0,
 });
 
@@ -118,7 +118,15 @@ export function SuppliersPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    
+    // Validation (comme dans Customers)
+    if (!form.name || !form.phone) {
+      toast.error('Nom et téléphone requis');
+      return;
+    }
+    
     const now = nowISO();
+    
     if (editing) {
       const changes: string[] = [];
       if (form.name !== editing.name) changes.push(`Nom : ${editing.name} → ${form.name}`);
@@ -126,10 +134,14 @@ export function SuppliersPage() {
       if (form.address !== editing.address) changes.push(`Adresse : ${editing.address || '—'} → ${form.address || '—'}`);
 
       await db.suppliers.update(editing.id, {
-        ...form,
+        name: form.name,
+        phone: form.phone,
+        address: form.address,
+        creditBalance: editing.creditBalance ?? 0,  // ← Important
         updatedAt: now,
         syncStatus: 'pending',
       });
+      
       await logAction({
         action: 'modification',
         entity: 'fournisseur',
@@ -139,18 +151,27 @@ export function SuppliersPage() {
       });
     } else {
       const id = generateId();
+      
       await db.suppliers.add({
         id,
-        name: form.name!,
-        phone: form.phone!,
-        address: form.address!,
+        name: form.name,
+        phone: form.phone,
+        address: form.address,
         creditBalance: 0,
+        deleted: false,        // ← Ajouté
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
       });
-      await logAction({ action: 'creation', entity: 'fournisseur', entityId: id, entityName: form.name });
+      
+      await logAction({ 
+        action: 'creation', 
+        entity: 'fournisseur', 
+        entityId: id, 
+        entityName: form.name 
+      });
     }
+    
     setModalOpen(false);
     toast.success(editing ? 'Fournisseur modifié' : 'Fournisseur ajouté');
   };

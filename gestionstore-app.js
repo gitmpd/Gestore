@@ -126,7 +126,7 @@ function ensurePrereqs() {
     installWithBestEffort('psql');
   }
   if (!hasCmd('psql')) {
-    throw new Error('psql introuvable apres installation.');
+    throw new Error('psql introuvable après installation.');
   }
   ok('Prerequis verifies.');
 }

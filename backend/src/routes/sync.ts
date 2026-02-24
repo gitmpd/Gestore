@@ -29,7 +29,8 @@ type MutatingTable =
   | 'expenses'
   | 'customerOrders'
   | 'customerOrderItems'
-  | 'priceHistory';
+  | 'priceHistory'
+  | 'supplierCreditTransactions';
 
 const tableMap: Record<MutatingTable, string> = {
   categories: 'category',
@@ -47,6 +48,7 @@ const tableMap: Record<MutatingTable, string> = {
   customerOrders: 'customerOrder',
   customerOrderItems: 'customerOrderItem',
   priceHistory: 'priceHistory',
+  supplierCreditTransactions: 'supplierCreditTransaction',
 };
 
 const tablesWithoutUpdatedAt = new Set<MutatingTable>(['priceHistory']);
