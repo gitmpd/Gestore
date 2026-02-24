@@ -77,6 +77,7 @@ export function AuditPage() {
 
   const users = useLiveQuery(async () => (await db.users.orderBy('name').toArray()).filter((u) => !u.deleted)) ?? [];
   const userMap = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
+  const [datePreset, setDatePreset] = useState<'today' | 'week' | 'month' | '' >('');
 
   const scopedManagerIds = useMemo(() => {
     if (!currentUser) return new Set<string>();
@@ -196,7 +197,43 @@ export function AuditPage() {
     const action = (actionLabels[log.action] ?? log.action).toLowerCase();
     return `Le ${date}, ${log.userName} a effectué une action de type ${action} sur ${item}${details ? ` (${details})` : ''}.`;
   };
+  const applyDatePreset = (preset: 'today' | 'week' | 'month') => {
+    const now = new Date();
 
+    if (preset === 'today') {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+
+      const end = new Date();
+      end.setHours(23, 59, 59, 999);
+
+      setDateFrom(start.toISOString().slice(0, 10));
+      setDateTo(end.toISOString().slice(0, 10));
+    }
+
+    if (preset === 'week') {
+      const start = new Date(now);
+      const day = start.getDay() || 7; // Lundi = début
+      start.setDate(start.getDate() - day + 1);
+      start.setHours(0, 0, 0, 0);
+
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      end.setHours(23, 59, 59, 999);
+
+      setDateFrom(start.toISOString().slice(0, 10));
+      setDateTo(end.toISOString().slice(0, 10));
+    }
+
+    if (preset === 'month') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+      setDateFrom(start.toISOString().slice(0, 10));
+      setDateTo(end.toISOString().slice(0, 10));
+    }
+    setDatePreset(preset);
+  };
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -208,16 +245,13 @@ export function AuditPage() {
           <h1 className="text-2xl font-bold text-text">Journal d'activité</h1>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
-            <Filter size={16} /> Filtres
-          </Button>
           <Button variant="outline" size="sm" onClick={exportCSV} disabled={logs.length === 0}>
             <Download size={16} /> Exporter CSV
           </Button>
         </div>
       </div>
 
-      <div className="relative">
+      <div className="flex gap-2">
         <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
         <input
           className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-surface text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -225,6 +259,32 @@ export function AuditPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
+          <Filter size={16} /> Filtres
+        </Button>
+        <Button
+          size="sm"
+          variant={datePreset === 'today' ? 'ghost' : 'outline'}
+          onClick={() => applyDatePreset('today')}
+        >
+          Aujourd’hui
+        </Button>
+
+        <Button
+          size="sm"
+          variant={datePreset === 'week' ? 'ghost' : 'outline'}
+          onClick={() => applyDatePreset('week')}
+        >
+          Cette semaine
+        </Button>
+
+        <Button
+          size="sm"
+          variant={datePreset === 'month' ? 'ghost' : 'outline'}
+          onClick={() => applyDatePreset('month')}
+        >
+          Ce mois
+        </Button>
       </div>
 
       {showFilters && (

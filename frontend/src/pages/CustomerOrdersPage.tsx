@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateCustomerOrderRef } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 const statusLabels: Record<CustomerOrderStatus, string> = {
@@ -153,7 +153,7 @@ export function CustomerOrdersPage() {
     e.preventDefault();
     if (!customerId || orderLines.length === 0 || !user) return;
     const now = nowISO();
-    const orderId = generateId();
+    const orderId = generateCustomerOrderRef();
 
     await db.customerOrders.add({
       id: orderId,

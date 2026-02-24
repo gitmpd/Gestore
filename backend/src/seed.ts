@@ -4,30 +4,28 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
-  // Hash du mot de passe par défaut
-  const adminPassword = await bcrypt.hash('admin123', 10);
-
-  // Upsert pour créer ou mettre à jour l'admin
-  const admin = await prisma.user.upsert({
+  const existingAdmin = await prisma.user.findUnique({
     where: { email: 'admin@store.com' },
-    update: {
-      password: adminPassword,       // <--- met à jour le mot de passe existant
-      mustChangePassword: true,      // force le changement à la première connexion
-      active: true,
-      role: 'gerant',
-      name: 'Gérant',
-    },
-    create: {
-      name: 'Gérant',
-      email: 'admin@store.com',
-      password: adminPassword,
-      role: 'gerant',
-      active: true,
-      mustChangePassword: true,
-    },
   });
 
-  console.log('Gérant créé ou mis à jour:', admin.email);
+  if (!existingAdmin) {
+    const adminPassword = await bcrypt.hash('admin123', 10);
+
+    await prisma.user.create({
+      data: {
+        name: 'Gérant',
+        email: 'admin@store.com',
+        password: adminPassword,
+        role: 'gerant',
+        active: true,
+        mustChangePassword: true,
+      },
+    });
+
+    console.log('Gérant créé.');
+  } else {
+    console.log('Gérant déjà existant. Aucun changement effectué.');
+  }
 }
 
 main()

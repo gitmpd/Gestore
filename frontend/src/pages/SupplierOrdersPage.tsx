@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 
@@ -113,7 +113,7 @@ export function SupplierOrdersPage() {
     if (!supplierId || orderLines.length === 0 || !user) return;
 
     const now = nowISO();
-    const orderId = generateId();
+    const orderId = generateSupplierOrderRef();
     const total = orderLines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
 
     await db.supplierOrders.add({

@@ -10,7 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
+import { generateId, generateReference, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
@@ -141,7 +141,7 @@ export function SalesPage() {
 
     try {
       const now = nowISO();
-      const saleId = generateId();
+      const saleId = generateReference();
 
       await db.sales.add({
         id: saleId,
@@ -431,7 +431,7 @@ export function SalesPage() {
                       />
                     </Td>
                   )}
-                  <Td className="font-mono text-sm">#{s.id.slice(0, 8)}</Td>
+                  <Td className="font-mono text-sm">#{s.id}</Td>
                   <Td className="text-text-muted">{formatDateTime(s.date)}</Td>
                   {isGerant && (
                     <Td className="text-sm">{userMap.get(s.userId) ?? '—'}</Td>
@@ -626,7 +626,7 @@ export function SalesPage() {
       <Modal
         open={detailModalOpen}
         onClose={() => setDetailModalOpen(false)}
-        title={`Vente #${selectedSale?.id.slice(0, 8) ?? ''}`}
+        title={`Vente #${selectedSale?.id ?? ''}`}
         className="max-w-lg"
       >
         {selectedSale && (

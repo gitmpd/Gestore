@@ -6,7 +6,7 @@ import { Package, ArrowLeft, Search, TrendingDown, CheckCircle, ArrowRightLeft, 
 import { db } from '@/db';
 import type { Product } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO } from '@/lib/utils';
+import { generateId, generateSupplierOrderRef, nowISO } from '@/lib/utils';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 
@@ -148,7 +148,7 @@ export function LowStockPage() {
         });
     }
 
-    const orderId = generateId();
+    const orderId = generateSupplierOrderRef();
     await db.supplierOrders.add({
       id: orderId,
       supplierId: finalSupplierId,
