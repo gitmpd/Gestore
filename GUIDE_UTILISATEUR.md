@@ -22,7 +22,7 @@ Notes:
 
 ## 3. Flux metier principal
 
-### Approvisionnement (entree de stock)
+### Approvisionnement (entrée de stock)
 1. Aller dans `Commandes fournisseurs`
 2. Creer une commande
 3. Valider/recevoir la commande

@@ -66,7 +66,7 @@ app.use(cors({
       callback(null, true);
       return;
     }
-    callback(new Error('Origin non autorisee par CORS'));
+    callback(new Error('Origin non autorisée par CORS'));
   },
   credentials: true,
 }));

@@ -2,7 +2,7 @@ import { useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Package, ArrowLeft, Search, TrendingDown, CheckCircle, ArrowRightLeft } from 'lucide-react';
+import { Package, ArrowLeft, Search, TrendingDown, CheckCircle, ArrowRightLeft, Calculator } from 'lucide-react';
 import { db } from '@/db';
 import type { Product } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
@@ -22,6 +22,7 @@ export function LowStockPage() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [supplierId, setSupplierId] = useState('');
   const [orderQty, setOrderQty] = useState(1);
+  const [totalAmount, setTotalAmount] = useState(0);
   const [unitPrice, setUnitPrice] = useState(0);
   const [receiveNow, setReceiveNow] = useState(false);
   const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
@@ -59,6 +60,21 @@ export function LowStockPage() {
   const lowCount = allProducts.filter((p) => p.quantity > 0 && p.quantity <= p.alertThreshold).length;
   const okCount = allProducts.filter((p) => p.quantity > p.alertThreshold).length;
 
+  // Calcul du prix unitaire lorsque la quantité ou le montant total change
+  const handleOrderQtyChange = (qty: number) => {
+    setOrderQty(qty);
+    if (qty > 0 && totalAmount > 0) {
+      setUnitPrice(totalAmount / qty);
+    }
+  };
+
+  const handleTotalAmountChange = (amount: number) => {
+    setTotalAmount(amount);
+    if (orderQty > 0 && amount > 0) {
+      setUnitPrice(amount / orderQty);
+    }
+  };
+
   function getStockLevel(qty: number, threshold: number) {
     if (qty === 0)
       return { label: 'Rupture', color: 'bg-red-500', bg: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800', text: 'text-red-700 dark:text-red-400', barColor: 'bg-red-500' };
@@ -87,7 +103,8 @@ export function LowStockPage() {
     setSelectedProduct(product);
     setSupplierId(suppliers[0]?.id ?? '');
     setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
-    setUnitPrice(product.buyPrice ?? 0);
+    setTotalAmount(0);
+    setUnitPrice(0);
     setReceiveNow(false);
     setPaymentMode('cash');
     setReorderModalOpen(true);
@@ -107,23 +124,21 @@ export function LowStockPage() {
 
   const handleCreateSupplierOrder = async (e: FormEvent) => {
     e.preventDefault();
-    if (!selectedProduct || orderQty <= 0 || unitPrice < 0) {
-      toast.error('Vérifie les données de la commande');
+    if (!selectedProduct || orderQty <= 0 || totalAmount <= 0) {
+      toast.error('Vérifie les données de la commande (quantité et montant total)');
       return;
     }
+    
     const now = nowISO();
-    const total = orderQty * unitPrice;
+    // Utiliser le montant total saisi, pas le prix unitaire * quantité
+    const total = totalAmount;
 
     let finalSupplierId = supplierId;
     if (!finalSupplierId) {
-      const unknown = suppliers.find((s) => s.name.toLowerCase() === 'fournisseur inconnu');
-      if (unknown) {
-        finalSupplierId = unknown.id;
-      } else {
         finalSupplierId = generateId();
         await db.suppliers.add({
           id: finalSupplierId,
-          name: 'Fournisseur inconnu',
+          name: '',
           phone: '-',
           address: '-',
           creditBalance: 0,
@@ -131,7 +146,6 @@ export function LowStockPage() {
           updatedAt: now,
           syncStatus: 'pending',
         });
-      }
     }
 
     const orderId = generateId();
@@ -154,7 +168,7 @@ export function LowStockPage() {
       productId: selectedProduct.id,
       productName: selectedProduct.name,
       quantity: orderQty,
-      unitPrice,
+      unitPrice: unitPrice, // Prix unitaire calculé
       total,
       createdAt: now,
       updatedAt: now,
@@ -164,7 +178,7 @@ export function LowStockPage() {
     if (receiveNow) {
       await db.products.update(selectedProduct.id, {
         quantity: selectedProduct.quantity + orderQty,
-        buyPrice: unitPrice,
+        buyPrice: unitPrice, // Mettre à jour avec le nouveau prix d'achat
         updatedAt: now,
         syncStatus: 'pending',
       });
@@ -405,7 +419,6 @@ export function LowStockPage() {
               value={supplierId}
               onChange={(e) => setSupplierId(e.target.value)}
             >
-              <option value="">Fournisseur inconnu</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
@@ -420,22 +433,42 @@ export function LowStockPage() {
                 min={1}
                 className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
                 value={orderQty}
-                onChange={(e) => setOrderQty(Number(e.target.value) || 0)}
+                onChange={(e) => handleOrderQtyChange(Number(e.target.value) || 0)}
                 required
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-text">Prix unitaire achat</label>
-              <input
-                type="number"
-                min={0}
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={unitPrice}
-                onChange={(e) => setUnitPrice(Number(e.target.value) || 0)}
-                required
-              />
+              <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  className="w-full pl-8 rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                  value={totalAmount || ''}
+                  onChange={(e) => handleTotalAmountChange(Number(e.target.value) || 0)}
+                  placeholder="0"
+                  required
+                />
+              </div>
             </div>
           </div>
+
+          {/* Affichage du prix unitaire calculé */}
+          {orderQty > 0 && totalAmount > 0 && (
+            <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">Prix unitaire calculé :</span>
+                <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
+                  {(totalAmount / orderQty).toFixed(0)} FCFA
+                </span>
+              </div>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                Ce prix sera enregistré comme prix d'achat unitaire
+              </p>
+            </div>
+          )}
 
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium text-text">Traitement</label>

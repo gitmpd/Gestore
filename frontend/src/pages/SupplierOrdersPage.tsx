@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -53,9 +53,11 @@ export function SupplierOrdersPage() {
 
   const suppliers = useLiveQuery(async () => (await db.suppliers.orderBy('name').toArray()).filter((s) => !s.deleted)) ?? [];
   const allProducts = useLiveQuery(async () => (await db.products.orderBy('name').toArray()).filter((p) => !p.deleted)) ?? [];
-  const purchaseProducts = allProducts.filter((p) => !p.usage || p.usage === 'achat' || p.usage === 'achat_vente');
   const allUsers = useLiveQuery(async () => (await db.users.toArray()).filter((u) => !u.deleted)) ?? [];
   const userMap = new Map(allUsers.map((u) => [u.id, u.name]));
+  const saleProducts = allProducts.filter(
+    (p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente'
+  );
 
   const orders = useLiveQuery(async () => {
     const all = await db.supplierOrders.orderBy('date').reverse().toArray();
@@ -75,7 +77,13 @@ export function SupplierOrdersPage() {
     }
     return true;
   });
-
+  const filteredProducts = useMemo(() => {
+    return saleProducts.filter(
+      (p) =>
+        p.quantity > 0 &&
+        (p.name.toLowerCase().includes(search.toLowerCase()) || (p.barcode && p.barcode.includes(search)))
+    );
+  }, [saleProducts, search]);
   const orderTotal = orderLines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
 
   const openCreate = () => {
@@ -366,7 +374,7 @@ export function SupplierOrdersPage() {
             <Tr>
               <Th>N°</Th>
               <Th>Fournisseur</Th>
-              <Th>Cree par</Th>
+              <Th>Crée par</Th>
               <Th>Date</Th>
               <Th>Total</Th>
               <Th>Statut</Th>
@@ -474,7 +482,7 @@ export function SupplierOrdersPage() {
                 <div key={i} className="flex gap-2 items-center">
                   <ComboBox
                     className="flex-1"
-                    options={purchaseProducts.map((p) => ({
+                    options={filteredProducts.map((p) => ({
                       value: p.id,
                       label: p.name,
                       sublabel: `${formatCurrency(p.buyPrice)} - Stock: ${p.quantity}`,

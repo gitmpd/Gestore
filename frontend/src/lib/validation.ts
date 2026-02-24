@@ -36,7 +36,6 @@ export const userSchema = z.object({
 export const expenseSchema = z.object({
   category: z.string().min(1, 'Sélectionnez une catégorie'),
   amount: z.number().positive('Le montant doit être supérieur à 0'),
-  description: z.string().min(3, 'La description doit contenir au moins 3 caractères'),
   date: z.string().min(1, 'La date est requise'),
   recurring: z.boolean(),
 });

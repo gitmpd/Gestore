@@ -90,6 +90,7 @@ export function ReportsPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [detailModalKey, setDetailModalKey] = useState<MetricDetailKey | null>(null);
+  const [activeBar, setActiveBar] = useState<string | null>(null);
 
   const sales = useLiveQuery(() => db.sales.toArray()) ?? [];
   const saleItems = useLiveQuery(async () => (await db.saleItems.toArray()).filter((s) => !(s as any).deleted)) ?? [];
@@ -287,41 +288,91 @@ export function ReportsPage() {
     [suppliersToPay]
   );
 
-  const salesByDay = useMemo(() => {
-    const salesMap = new Map<string, number>();
-    const expMap = new Map<string, number>();
+ const salesByDay = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        ventesDetail: number;
+        remboursementsCredits: number;
+        commandesClients: number;
+        depensesManuelles: number;
+        paiementsFournisseurs: number;
+      }
+    >();
+
+    const ensureDay = (day: string) => {
+      if (!map.has(day)) {
+        map.set(day, {
+          ventesDetail: 0,
+          remboursementsCredits: 0,
+          commandesClients: 0,
+          depensesManuelles: 0,
+          paiementsFournisseurs: 0,
+        });
+      }
+      return map.get(day)!;
+    };
+
+    // 🔵 VENTES ENCAISSÉES
     filteredSales.forEach((s) => {
       if (s.paymentMethod === 'credit') return;
       const day = s.date.slice(0, 10);
-      salesMap.set(day, (salesMap.get(day) ?? 0) + s.total);
+      ensureDay(day).ventesDetail += s.total;
     });
+
+    // 🔵 REMBOURSEMENTS CRÉDITS CLIENTS
     filteredCustomerCreditPayments.forEach((t) => {
       const day = t.date.slice(0, 10);
-      salesMap.set(day, (salesMap.get(day) ?? 0) + t.amount);
+      ensureDay(day).remboursementsCredits += t.amount;
     });
+
+    // 🔵 COMMANDES CLIENTS
     customerOrderCashEntries.forEach((entry) => {
       const day = entry.date.slice(0, 10);
-      salesMap.set(day, (salesMap.get(day) ?? 0) + entry.amount);
+      ensureDay(day).commandesClients += entry.amount;
     });
+
+    // 🔴 DÉPENSES MANUELLES
     filteredExpenses.forEach((e) => {
       const day = e.date.slice(0, 10);
-      expMap.set(day, (expMap.get(day) ?? 0) + e.amount);
+      ensureDay(day).depensesManuelles += e.amount;
     });
+
+    // 🔴 PAIEMENTS FOURNISSEURS
     filteredSupplierPayments.forEach((t) => {
       const day = t.date.slice(0, 10);
-      expMap.set(day, (expMap.get(day) ?? 0) + t.amount);
+      ensureDay(day).paiementsFournisseurs += t.amount;
     });
-    const allDays = new Set([...salesMap.keys(), ...expMap.keys()]);
-    return [...allDays]
-      .sort()
-      .map((day) => ({
-        dayKey: day,
-        date: new Date(day).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }),
-        ventes: salesMap.get(day) ?? 0,
-        depenses: expMap.get(day) ?? 0,
-      }));
-  }, [filteredSales, filteredExpenses, customerOrderCashEntries, filteredCustomerCreditPayments, filteredSupplierPayments]);
 
+    return [...map.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, values]) => ({
+        dayKey: day,
+        date: new Date(day).toLocaleDateString('fr-FR', {
+          day: '2-digit',
+          month: 'short',
+        }),
+
+        // Totaux
+        ventes:
+          values.ventesDetail +
+          values.remboursementsCredits +
+          values.commandesClients,
+
+        depenses:
+          values.depensesManuelles +
+          values.paiementsFournisseurs,
+
+        // Détails pour le tooltip
+        ...values,
+      }));
+  }, [
+    filteredSales,
+    filteredCustomerCreditPayments,
+    customerOrderCashEntries,
+    filteredExpenses,
+    filteredSupplierPayments,
+  ]);
   const salesByCategory = useMemo(() => {
     const map = new Map<string, number>();
     for (const sale of filteredSales) {
@@ -379,7 +430,80 @@ export function ReportsPage() {
     const elementId = kind === 'customers' ? 'clients-debiteurs-list' : 'fournisseurs-a-payer-list';
     document.getElementById(elementId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
+  const FocusedTooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload || !payload.length) return null;
 
+    // On récupère uniquement la donnée correspondant à la barre active
+    const entry = payload.find((p: any) => p.dataKey === activeBar);
+    if (!entry) return null;
+
+    const data = entry.payload;
+
+    return (
+      <div className="bg-surface border border-border rounded-lg shadow-lg p-3 text-sm min-w-[180px]">
+        <p className="font-semibold mb-2">{label}</p>
+
+        {activeBar === 'ventes' && (
+          <>
+            <p className="text-xs text-blue-600 font-semibold mb-1">
+              Entrées de trésorerie
+            </p>
+
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span>Ventes encaissées:</span>
+                <span>{formatCurrency(data.ventesDetail)}</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span>Remboursements crédits:</span>
+                <span>{formatCurrency(data.remboursementsCredits)}</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span>Commandes clients:</span>
+                <span>{formatCurrency(data.commandesClients)}</span>
+              </div>
+
+              <div className="flex justify-between font-bold border-t pt-1 mt-1">
+                <span>Total:</span>
+                <span className="text-blue-600">
+                  {formatCurrency(data.ventes)}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeBar === 'depenses' && (
+          <>
+            <p className="text-xs text-red-600 font-semibold mb-1">
+              Sorties de trésorerie
+            </p>
+
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span>Dépenses manuelles:</span>
+                <span>{formatCurrency(data.depensesManuelles)}</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span>Paiements fournisseurs:</span>
+                <span>{formatCurrency(data.paiementsFournisseurs)}</span>
+              </div>
+
+              <div className="flex justify-between font-bold border-t pt-1 mt-1">
+                <span>Total:</span>
+                <span className="text-red-600">
+                  {formatCurrency(data.depenses)}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -602,53 +726,101 @@ export function ReportsPage() {
           </div>
         )}
       </Modal>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6"> 
-        <Card>
-          <CardTitle>Entrees vs sorties par jour</CardTitle>
-          {salesByDay.length === 0 ? (
-            <p className="text-text-muted text-sm py-8 text-center">Aucune donnée pour cette période</p>
-          ) : (
-            <div className="mt-4 space-y-3">
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={salesByDay} margin={{ top: 8, right: 8, left: 8, bottom: 16 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#64748b' }} minTickGap={14} />
-                    <YAxis
-                      tick={{ fontSize: 12, fill: '#64748b' }}
-                      width={56}
-                      tickFormatter={(value: number) => formatAxisCompact(value)}
-                    />
-                    <Tooltip
-                      formatter={(value: number | undefined) => formatCurrency(value ?? 0)}
-                      labelStyle={{ fontWeight: 600 }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                    <Bar dataKey="ventes" name="Entrees" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="depenses" name="Sorties" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+      <Card>
+        <CardTitle>Entrees/sorties d'argent par jour</CardTitle>
+        {salesByDay.length === 0 ? (
+          <p className="text-text-muted text-sm py-8 text-center">Aucune donnée pour cette période</p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={salesByDay} margin={{ top: 8, right: 8, left: 8, bottom: 16 }} onMouseLeave={() => setActiveBar(null)}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#64748b' }} minTickGap={14} />
+                  <YAxis
+                    tick={{ fontSize: 12, fill: '#64748b' }}
+                    width={56}
+                    tickFormatter={(value: number) => formatAxisCompact(value)}
+                  />
+                  <Tooltip
+                    content={<FocusedTooltip />}
+                    cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+                    shared={false}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="ventes" name="Entrees" fill="#3b82f6" radius={[4, 4, 0, 0]}  onMouseEnter={() => setActiveBar('ventes')} fillOpacity={activeBar && activeBar !== 'ventes' ? 0.2 : 1} isAnimationActive={false}  style={{ transition: 'opacity 0.2s ease' }}/>
+                  <Bar dataKey="depenses" name="Sorties" fill="#ef4444" radius={[4, 4, 0, 0]} onMouseEnter={() => setActiveBar('depenses')} fillOpacity={activeBar && activeBar !== 'depenses' ? 0.2 : 1} isAnimationActive={false}  style={{ transition: 'opacity 0.2s ease' }}/>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="rounded-lg border border-border bg-surface/60 p-2">
+              <div className="grid grid-cols-3 gap-2 px-1 pb-1 text-[11px] font-semibold text-text-muted">
+                <span>Jour</span>
+                <span className="text-right">Entrees</span>
+                <span className="text-right">Sorties</span>
               </div>
-              <div className="rounded-lg border border-border bg-surface/60 p-2">
-                <div className="grid grid-cols-3 gap-2 px-1 pb-1 text-[11px] font-semibold text-text-muted">
-                  <span>Jour</span>
-                  <span className="text-right">Entrees</span>
-                  <span className="text-right">Sorties</span>
-                </div>
-                <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
-                  {salesByDay.map((row) => (
-                    <div key={row.dayKey} className="grid grid-cols-3 gap-2 px-1 text-xs">
-                      <span className="text-text">{row.date}</span>
-                      <span className="text-right text-blue-600 font-medium">{formatCurrency(row.ventes)}</span>
-                      <span className="text-right text-red-600 font-medium">{formatCurrency(row.depenses)}</span>
-                    </div>
-                  ))}
-                </div>
+              <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                {salesByDay.map((row) => (
+                  <div key={row.dayKey} className="grid grid-cols-3 gap-2 px-1 text-xs">
+                    <span className="text-text">{row.date}</span>
+                    <span className="text-right text-blue-600 font-medium">{formatCurrency(row.ventes)}</span>
+                    <span className="text-right text-red-600 font-medium">{formatCurrency(row.depenses)}</span>
+                  </div>
+                ))}
               </div>
             </div>
-          )}
+          </div>
+        )}
+      </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6"> 
+        {expensesByCategory.length > 0 && (
+        <Card>
+          <CardTitle>Dépenses par catégorie</CardTitle>
+          <div className="mt-4 space-y-3">
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={expensesByCategoryDetailed}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={80}
+                    label={false}
+                    labelLine={false}
+                  >
+                    {expensesByCategoryDetailed.map((_, i) => (
+                      <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: number | undefined) => formatCurrency(value ?? 0)} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="rounded-lg border border-border bg-surface/60 p-2">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-2 px-1 pb-1 text-[11px] font-semibold text-text-muted">
+                <span>Categorie</span>
+                <span className="text-right">Part</span>
+                <span className="text-right">Montant</span>
+              </div>
+              <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                {expensesByCategoryDetailed.map((row, i) => (
+                  <div key={row.name} className="grid grid-cols-[1fr_auto_auto] gap-2 px-1 text-xs items-center">
+                    <span className="text-text flex items-center gap-1.5 min-w-0">
+                      <span className="inline-block h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: COLORS[(i + 3) % COLORS.length] }} />
+                      <span className="truncate">{row.name}</span>
+                    </span>
+                    <span className="text-right text-text-muted">{row.percent.toFixed(1)}%</span>
+                    <span className="text-right font-medium text-text">{formatCurrency(row.value)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </Card>
+        )}
 
         <Card>
           <CardTitle>Ventes par catégorie</CardTitle>
@@ -701,56 +873,7 @@ export function ReportsPage() {
           )}
         </Card>
       </div>
-
-      {expensesByCategory.length > 0 && (
-        <Card>
-          <CardTitle>Dépenses par catégorie</CardTitle>
-          <div className="mt-4 space-y-3">
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={expensesByCategoryDetailed}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={80}
-                    label={false}
-                    labelLine={false}
-                  >
-                    {expensesByCategoryDetailed.map((_, i) => (
-                      <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value: number | undefined) => formatCurrency(value ?? 0)} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="rounded-lg border border-border bg-surface/60 p-2">
-              <div className="grid grid-cols-[1fr_auto_auto] gap-2 px-1 pb-1 text-[11px] font-semibold text-text-muted">
-                <span>Categorie</span>
-                <span className="text-right">Part</span>
-                <span className="text-right">Montant</span>
-              </div>
-              <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
-                {expensesByCategoryDetailed.map((row, i) => (
-                  <div key={row.name} className="grid grid-cols-[1fr_auto_auto] gap-2 px-1 text-xs items-center">
-                    <span className="text-text flex items-center gap-1.5 min-w-0">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: COLORS[(i + 3) % COLORS.length] }} />
-                      <span className="truncate">{row.name}</span>
-                    </span>
-                    <span className="text-right text-text-muted">{row.percent.toFixed(1)}%</span>
-                    <span className="text-right font-medium text-text">{formatCurrency(row.value)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
-
+      
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card id="clients-debiteurs-list">
           <div className="flex items-center justify-between gap-3">

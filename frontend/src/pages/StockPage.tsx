@@ -284,7 +284,7 @@ export function StockPage() {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <p className="text-xs text-text-muted">
-            Entrée et sortie sont automatiques (réception commande fournisseur et ventes). Ici: retour client, ou ajustement manuel (hausse autorisee uniquement pour le gerant).
+            Entrée et sortie sont automatiques (réception commande fournisseur et ventes). Ici: retour client, ou ajustement manuel (hausse autorisée uniquement pour le gerant).
           </p>
           <div className="flex flex-col gap-1">
             <label className="text-sm font-medium text-text">Type</label>
@@ -323,7 +323,7 @@ export function StockPage() {
 
           <Input
             id="qty"
-            label={type === 'ajustement' ? 'Nouvelle quantite reelle' : 'Quantite'}
+            label={type === 'ajustement' ? 'Nouvelle quantite réelle' : 'Quantite'}
             type="number"
             min={0}
             value={quantity}

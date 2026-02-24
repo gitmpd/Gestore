@@ -49,7 +49,7 @@ export function AppLayout() {
 
       const lastActivity = readSessionActivityAt();
       if (lastActivity && Date.now() - lastActivity >= SESSION_IDLE_TIMEOUT_MS) {
-        toast.error('Session fermee apres inactivite.');
+        toast.error('Session fermée apres inactivité.');
         state.logout();
       }
     };

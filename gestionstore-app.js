@@ -137,7 +137,7 @@ function ensureEnv() {
       throw new Error('backend/.env manquant et backend/.env.example introuvable.');
     }
     fs.copyFileSync(BACKEND_ENV_EXAMPLE, BACKEND_ENV);
-    ok('backend/.env cree depuis .env.example');
+    ok('backend/.env crée depuis .env.example');
   }
 }
 

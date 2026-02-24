@@ -67,7 +67,7 @@ function Ensure-EnvFile {
     }
 
     Copy-Item -Path $BackendEnvExample -Destination $BackendEnvFile
-    Write-Ok 'backend/.env cree depuis .env.example'
+    Write-Ok 'backend/.env crée depuis .env.example'
   }
 }
 
@@ -151,7 +151,7 @@ function Ensure-Database([hashtable]$Db) {
     if ($LASTEXITCODE -ne 0) {
       throw "Creation base '$($Db.Name)' impossible"
     }
-    Write-Ok "Base '$($Db.Name)' creee."
+    Write-Ok "Base '$($Db.Name)' créée."
   } else {
     Write-Ok "Base '$($Db.Name)' deja presente."
   }
@@ -192,7 +192,7 @@ function Start-ServicesHidden {
   Start-Sleep -Seconds 2
   Start-Process 'http://localhost:5173'
 
-  Write-Ok 'Application lancee en mode cache.'
+  Write-Ok 'Application lancée en mode cache.'
   Write-Host 'Frontend : http://localhost:5173'
   Write-Host 'Backend  : http://localhost:3001'
 }
