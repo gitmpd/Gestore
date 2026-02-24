@@ -1,4 +1,4 @@
-import { useState, type FormEvent, useMemo } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -18,7 +18,7 @@ import { confirmAction } from '@/stores/confirmStore';
 const statusLabels: Record<OrderStatus, string> = {
   en_attente: 'En attente',
   recue: 'Recue',
-  annulee: 'Annulee',
+  annulee: 'Annulée',
 };
 
 const statusVariants: Record<OrderStatus, 'warning' | 'success' | 'danger'> = {
@@ -53,11 +53,9 @@ export function SupplierOrdersPage() {
 
   const suppliers = useLiveQuery(async () => (await db.suppliers.orderBy('name').toArray()).filter((s) => !s.deleted)) ?? [];
   const allProducts = useLiveQuery(async () => (await db.products.orderBy('name').toArray()).filter((p) => !p.deleted)) ?? [];
+  const purchaseProducts = allProducts.filter((p) => !p.usage || p.usage === 'achat' || p.usage === 'achat_vente');
   const allUsers = useLiveQuery(async () => (await db.users.toArray()).filter((u) => !u.deleted)) ?? [];
   const userMap = new Map(allUsers.map((u) => [u.id, u.name]));
-  const saleProducts = allProducts.filter(
-    (p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente'
-  );
 
   const orders = useLiveQuery(async () => {
     const all = await db.supplierOrders.orderBy('date').reverse().toArray();
@@ -77,13 +75,7 @@ export function SupplierOrdersPage() {
     }
     return true;
   });
-  const filteredProducts = useMemo(() => {
-    return saleProducts.filter(
-      (p) =>
-        p.quantity > 0 &&
-        (p.name.toLowerCase().includes(search.toLowerCase()) || (p.barcode && p.barcode.includes(search)))
-    );
-  }, [saleProducts, search]);
+
   const orderTotal = orderLines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
 
   const openCreate = () => {
@@ -161,7 +153,7 @@ export function SupplierOrdersPage() {
     });
 
     setCreateModalOpen(false);
-    toast.success('Commande fournisseur creee');
+    toast.success('Commande fournisseur créée');
   };
 
   const receiveOrder = async (order: SupplierOrder & { supplierName: string }, paymentMode: 'cash' | 'credit') => {
@@ -248,7 +240,7 @@ export function SupplierOrdersPage() {
         amount: order.total,
         type: 'payment',
         date: now,
-        note: `Commande #${order.id.slice(0, 8)} payee`,
+        note: `Commande #${order.id.slice(0, 8)} payée`,
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
@@ -260,10 +252,10 @@ export function SupplierOrdersPage() {
       entity: 'commande',
       entityId: order.id,
       entityName: order.supplierName,
-      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)} - ${paymentMode === 'credit' ? 'Credit fournisseur' : 'Payee'}`,
+      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)} - ${paymentMode === 'credit' ? 'Credit fournisseur' : 'Payée'}`,
     });
 
-    toast.success(paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande recue et payee');
+    toast.success(paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande recue et payée');
   };
 
   const handleCancel = async (order: SupplierOrder & { supplierName: string }) => {
@@ -386,7 +378,7 @@ export function SupplierOrdersPage() {
             {filteredOrders.length === 0 ? (
               <Tr>
                 <Td colSpan={8} className="text-center text-text-muted py-8">
-                  Aucune commande trouvee
+                  Aucune commande trouvée
                 </Td>
               </Tr>
             ) : (
@@ -402,7 +394,7 @@ export function SupplierOrdersPage() {
                   </Td>
                   <Td>
                     {o.status === 'recue'
-                      ? (o.isCredit ? 'Credit' : 'Payee')
+                      ? (o.isCredit ? 'Credit' : 'Payée')
                       : '—'}
                   </Td>
                   <Td>
@@ -419,7 +411,7 @@ export function SupplierOrdersPage() {
                           <button
                             onClick={() => receiveOrder(o, 'cash')}
                             className="p-1.5 rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 text-emerald-700 dark:text-emerald-400"
-                            title="Marquer recue et payee"
+                            title="Marquer recue et payée"
                           >
                             <PackageCheck size={16} />
                           </button>
@@ -482,7 +474,7 @@ export function SupplierOrdersPage() {
                 <div key={i} className="flex gap-2 items-center">
                   <ComboBox
                     className="flex-1"
-                    options={filteredProducts.map((p) => ({
+                    options={purchaseProducts.map((p) => ({
                       value: p.id,
                       label: p.name,
                       sublabel: `${formatCurrency(p.buyPrice)} - Stock: ${p.quantity}`,
@@ -535,7 +527,7 @@ export function SupplierOrdersPage() {
               Annuler
             </Button>
             <Button type="submit" disabled={!supplierId || orderLines.length === 0}>
-              Creer la commande
+              Créer la commande
             </Button>
           </div>
         </form>
