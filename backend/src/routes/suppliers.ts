@@ -56,6 +56,7 @@ router.post('/:id/orders', async (req: AuthRequest, res) => {
     data: {
       supplierId,
       total,
+      paymentMethod: 'cash',
       userId: req.userId ?? null,
       items: { create: items },
     },
@@ -68,6 +69,7 @@ router.post('/:id/orders', async (req: AuthRequest, res) => {
 router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
   try {
     const orderId = req.params.orderId as string;
+    const { deposit = 0 } = req.body;
 
     const updated = await prisma.$transaction(async (tx) => {
       const lock = await tx.supplierOrder.updateMany({
@@ -76,7 +78,10 @@ router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
       });
 
       if (lock.count === 0) {
-        const existing = await tx.supplierOrder.findUnique({ where: { id: orderId }, select: { status: true, deleted: true } });
+        const existing = await tx.supplierOrder.findUnique({ 
+          where: { id: orderId }, 
+          select: { status: true, deleted: true } 
+        });
         if (!existing || existing.deleted) {
           throw new Error('Commande non trouvee');
         }
@@ -95,10 +100,18 @@ router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
         throw new Error('Commande non trouvee');
       }
 
+      // Calculer le montant payé et le reste
+      const amountPaid = Math.min(deposit, order.total);
+      const remaining = order.total - amountPaid;
+
+      // Mettre à jour le stock
       for (const item of order.items) {
         await tx.product.update({
           where: { id: item.productId },
-          data: { quantity: { increment: item.quantity } },
+          data: { 
+            quantity: { increment: item.quantity },
+            buyPrice: item.unitPrice,
+          },
         });
         await tx.stockMovement.create({
           data: {
@@ -108,6 +121,45 @@ router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
             quantity: item.quantity,
             reason: `Reception commande #${order.id.slice(0, 8)}`,
             userId: req.userId ?? null,
+          },
+        });
+      }
+
+      // Mettre à jour la commande avec l'acompte
+      await tx.supplierOrder.update({
+        where: { id: orderId },
+        data: {
+          deposit: amountPaid,
+          paymentMethod: amountPaid === 0 ? 'credit' : amountPaid === order.total ? 'cash' : 'credit',
+        },
+      });
+
+      // Créer les transactions de crédit
+      if (amountPaid > 0) {
+        await tx.supplierCreditTransaction.create({
+          data: {
+            supplierId: order.supplierId,
+            orderId: order.id,
+            amount: amountPaid,
+            type: 'payment',
+            note: `Commande #${order.id.slice(0, 8)} - ${amountPaid === order.total ? 'Paiement total' : 'Paiement partiel'}`,
+          },
+        });
+      }
+
+      if (remaining > 0) {
+        await tx.supplier.update({
+          where: { id: order.supplierId },
+          data: { creditBalance: { increment: remaining } },
+        });
+        
+        await tx.supplierCreditTransaction.create({
+          data: {
+            supplierId: order.supplierId,
+            orderId: order.id,
+            amount: remaining,
+            type: 'credit',
+            note: `Commande #${order.id.slice(0, 8)} - ${amountPaid > 0 ? 'Reste après acompte' : 'Credit fournisseur'}`,
           },
         });
       }

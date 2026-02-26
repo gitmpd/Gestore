@@ -332,6 +332,7 @@ export function SettingsPage() {
       entityName: user.name,
       details: 'Suppression logique (conservé pour traçabilité)',
     });
+    toast.success(`Utilisateur ${user.name} supprimé`);
   };
 
   const handleResetPassword = async (user: User) => {

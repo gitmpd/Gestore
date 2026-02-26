@@ -111,11 +111,20 @@ export function CategoriesPage() {
       confirmLabel: 'Supprimer',
       variant: 'danger',
     });
-    if (ok) {
+    if (!ok) return;
+  
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
       const now = nowISO();
       await db.categories.update(cat.id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
       await trackDeletion('categories', cat.id);
       await logAction({ action: 'suppression', entity: 'categorie', entityId: cat.id, entityName: cat.name });
+      
+      toast.dismiss(loadingToast);
+      toast.success(`Catégorie « ${cat.name} » supprimée`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
     }
   };
 

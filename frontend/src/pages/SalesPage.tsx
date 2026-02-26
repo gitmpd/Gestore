@@ -185,7 +185,7 @@ export function SalesPage() {
             type: 'sortie',
             quantity: item.quantity,
             date: now,
-            reason: `Vente #${saleId.slice(0, 8)}`,
+            reason: `Vente #${saleId}`,
             userId: user.id,
             createdAt: now,
             updatedAt: now,
@@ -210,7 +210,7 @@ export function SalesPage() {
             amount: total,
             type: 'credit',
             date: now,
-            note: `Vente #${saleId.slice(0, 8)}`,
+            note: `Vente #${saleId}`,
             createdAt: now,
             updatedAt: now,
             syncStatus: 'pending',
@@ -246,30 +246,39 @@ export function SalesPage() {
   const handleDeleteSale = async (sale: Sale) => {
     const ok = await confirmAction({
       title: 'Supprimer la vente',
-      message: `Voulez-vous vraiment supprimer la vente #${sale.id.slice(0, 8)} de ${formatCurrency(sale.total)} ?`,
+      message: `Voulez-vous vraiment supprimer la vente #${sale.id} de ${formatCurrency(sale.total)} ?`,
       confirmLabel: 'Supprimer',
       variant: 'danger',
     });
     if (!ok) return;
-
-    const now = nowISO();
-    await db.sales.update(sale.id, {
-      deleted: true,
-      status: 'cancelled',
-      updatedAt: now,
-      syncStatus: 'pending',
-    });
-
-    const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
-    const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
-
-    await logAction({
-      action: 'suppression',
-      entity: 'vente',
-      entityId: sale.id,
-      entityName: `#${sale.id.slice(0, 8)}`,
-      details: `${formatCurrency(sale.total)} — ${paymentLabels[sale.paymentMethod]} — ${itemsSummary}`,
-    });
+  
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
+      const now = nowISO();
+      await db.sales.update(sale.id, {
+        deleted: true,
+        status: 'cancelled',
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+  
+      const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
+      const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
+  
+      await logAction({
+        action: 'suppression',
+        entity: 'vente',
+        entityId: sale.id,
+        entityName: `#${sale.id}`,
+        details: `${formatCurrency(sale.total)} — ${paymentLabels[sale.paymentMethod]} — ${itemsSummary}`,
+      });
+  
+      toast.dismiss(loadingToast);
+      toast.success(`Vente #${sale.id} supprimée`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
+    }
   };
 
   return (
@@ -287,7 +296,7 @@ export function SalesPage() {
             size="sm"
             onClick={() => {
               const rows = filteredSales.map((s) => [
-                s.id.slice(0, 8),
+                s.id,
                 new Date(s.date).toLocaleDateString('fr-FR'),
                 formatCurrency(s.total),
                 s.paymentMethod,

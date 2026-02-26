@@ -99,7 +99,9 @@ export interface SupplierOrder extends SyncFields {
   supplierId: string;
   date: string;
   total: number;
+  deposit: number;
   status: OrderStatus;
+  paymentMethod?: PaymentMethod;
   isCredit?: boolean;
   userId?: string;
 }

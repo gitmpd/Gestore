@@ -163,15 +163,25 @@ export function CustomersPage() {
       variant: 'danger',
     });
     if (!ok) return;
-    const txIds = await db.creditTransactions.where('customerId').equals(id).primaryKeys();
-    const now = nowISO();
-    await db.customers.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-    for (const txId of txIds) {
-      await db.creditTransactions.update(txId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-      await trackDeletion('creditTransactions', txId as string);
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
+      const txIds = await db.creditTransactions.where('customerId').equals(id).primaryKeys();
+      const now = nowISO();
+      await db.transaction('rw', [db.customers, db.creditTransactions], async () => {
+        await db.customers.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+        for (const txId of txIds) {
+          await db.creditTransactions.update(txId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+          await trackDeletion('creditTransactions', txId as string);
+        }
+      });
+      await trackDeletion('customers', id);
+      await logAction({ action: 'suppression', entity: 'client', entityId: id, entityName: customer.name });
+      toast.dismiss(loadingToast);
+      toast.success(`Client « ${customer.name} » supprimé`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
     }
-    await trackDeletion('customers', id);
-    await logAction({ action: 'suppression', entity: 'client', entityId: id, entityName: customer.name });
   };
 
   return (

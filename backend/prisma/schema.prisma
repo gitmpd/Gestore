@@ -206,8 +206,9 @@ model SupplierOrder {
   supplierId   String
   date         DateTime    @default(now())
   total        Float
+  deposit      Float       @default(0)
   status       OrderStatus @default(en_attente)
-  paymentMethod PaymentMethod
+  paymentMethod PaymentMethod?
   userId       String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt

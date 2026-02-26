@@ -117,7 +117,7 @@ class StoreDB extends Dexie {
 
     this.version(15).stores({
       suppliers: 'id, name, creditBalance, deleted, syncStatus',
-      supplierOrders: 'id, supplierId, date, status, isCredit, syncStatus',
+      supplierOrders: 'id, supplierId, date, status, deposit, syncStatus',
       supplierCreditTransactions: 'id, supplierId, type, date, orderId, deleted, syncStatus',
     });
   }

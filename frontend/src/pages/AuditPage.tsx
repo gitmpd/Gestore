@@ -252,7 +252,6 @@ export function AuditPage() {
       </div>
 
       <div className="flex gap-2">
-        <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
         <input
           className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-surface text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
           placeholder="Rechercher par utilisateur, entité ou détails..."

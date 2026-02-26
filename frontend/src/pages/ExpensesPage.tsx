@@ -212,16 +212,26 @@ export function ExpensesPage() {
       variant: 'danger',
     });
     if (!ok) return;
-    const now = nowISO();
-    await db.expenses.update(expense.id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-    await trackDeletion('expenses', expense.id);
-    await logAction({
-      action: 'suppression',
-      entity: 'depense',
-      entityId: expense.id,
-      entityName: expenseCategoryLabels[expense.category],
-      details: formatCurrency(expense.amount),
-    });
+  
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
+      const now = nowISO();
+      await db.expenses.update(expense.id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+      await trackDeletion('expenses', expense.id);
+      await logAction({
+        action: 'suppression',
+        entity: 'depense',
+        entityId: expense.id,
+        entityName: expenseCategoryLabels[expense.category],
+        details: formatCurrency(expense.amount),
+      });
+  
+      toast.dismiss(loadingToast);
+      toast.success(`Dépense supprimée`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
+    }
   };
 
   const periodLabels: Record<FilterPeriod, string> = {

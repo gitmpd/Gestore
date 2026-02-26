@@ -190,26 +190,42 @@ export function ProductsPage() {
   const handleDelete = async (id: string) => {
     const product = await db.products.get(id);
     if (!product) return;
-
+  
     const ok = await confirmAction({
       title: 'Supprimer le produit',
-      message: `Supprimer le produit "${product.name}" ?\n\nCette action supprimera aussi ses mouvements de stock associes.`,
+      message: `Supprimer le produit "${product.name}" ?\n\nCette action supprimera aussi ses mouvements de stock associés.`,
       confirmLabel: 'Supprimer',
       variant: 'danger',
     });
     if (!ok) return;
-
-    const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
-    const now = nowISO();
-
-    await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-    for (const mId of movementIds) {
-      await db.stockMovements.update(mId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-      await trackDeletion('stockMovements', mId as string);
+  
+    // Afficher un toast de chargement
+    const loadingToast = toast.loading('Suppression en cours...');
+  
+    try {
+      const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
+      const now = nowISO();
+  
+      // Utiliser une transaction pour optimiser
+      await db.transaction('rw', [db.products, db.stockMovements], async () => {
+        await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+        
+        for (const mId of movementIds) {
+          await db.stockMovements.update(mId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+          await trackDeletion('stockMovements', mId as string);
+        }
+      });
+  
+      await trackDeletion('products', id);
+      await logAction({ action: 'suppression', entity: 'produit', entityId: id, entityName: product.name });
+  
+      // Fermer le toast de chargement et afficher le succès
+      toast.dismiss(loadingToast);
+      toast.success('Produit supprimé');
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
     }
-
-    await trackDeletion('products', id);
-    await logAction({ action: 'suppression', entity: 'produit', entityId: id, entityName: product.name });
   };
 
   return (

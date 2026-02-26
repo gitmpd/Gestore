@@ -32,7 +32,7 @@ const statusVariants: Record<OrderStatus, 'warning' | 'success' | 'danger'> = {
 const emptySupplier = (): Partial<Supplier> => ({
   name: '',
   phone: '',
-  address: '',  // ← Chaîne vide au lieu de undefined
+  address: '',
   creditBalance: 0,
 });
 
@@ -44,6 +44,7 @@ export function SuppliersPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [orderModalOpen, setOrderModalOpen] = useState(false);
   const [creditModalOpen, setCreditModalOpen] = useState(false);
+  const [receiveModalOpen, setReceiveModalOpen] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState<Partial<Supplier>>(emptySupplier());
@@ -54,6 +55,10 @@ export function SuppliersPage() {
   const [orderProducts, setOrderProducts] = useState<
     { productId: string; productName: string; quantity: number; unitPrice: number }[]
   >([]);
+
+  const [receiveOrderData, setReceiveOrderData] = useState<SupplierOrder | null>(null);
+  const [deposit, setDeposit] = useState(0);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'partial' | 'credit'>('cash');
 
   const suppliers = useLiveQuery(async () => {
     const all = await db.suppliers.toArray();
@@ -119,7 +124,6 @@ export function SuppliersPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     
-    // Validation (comme dans Customers)
     if (!form.name || !form.phone) {
       toast.error('Nom et téléphone requis');
       return;
@@ -137,7 +141,7 @@ export function SuppliersPage() {
         name: form.name,
         phone: form.phone,
         address: form.address,
-        creditBalance: editing.creditBalance ?? 0,  // ← Important
+        creditBalance: editing.creditBalance ?? 0,
         updatedAt: now,
         syncStatus: 'pending',
       });
@@ -156,9 +160,9 @@ export function SuppliersPage() {
         id,
         name: form.name,
         phone: form.phone,
-        address: form.address,
+        address: form.address || '',
         creditBalance: 0,
-        deleted: false,        // ← Ajouté
+        deleted: false,
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
@@ -188,6 +192,7 @@ export function SuppliersPage() {
       supplierId: selectedSupplier.id,
       date: now,
       total,
+      deposit: 0,
       status: 'en_attente',
       userId: currentUser?.id,
       createdAt: now,
@@ -221,87 +226,108 @@ export function SuppliersPage() {
     setOrderProducts([]);
   };
 
-  const receiveOrder = async (order: SupplierOrder, paymentMode: 'cash' | 'credit') => {
+  const openReceive = (order: SupplierOrder) => {
+    setReceiveOrderData(order);
+    setDeposit(0);
+    setPaymentMode('cash');
+    setReceiveModalOpen(true);
+  };
+
+  const handleReceive = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!receiveOrderData || !currentUser) return;
+    
+    const order = receiveOrderData;
     const now = nowISO();
     const items = await db.orderItems.where('orderId').equals(order.id).toArray();
 
+    // Calculer le montant payé et le reste
+    const amountPaid = paymentMode === 'credit' ? 0 : (paymentMode === 'partial' ? deposit : order.total);
+    const remaining = order.total - amountPaid;
+
     for (const item of items) {
       const product = await db.products.get(item.productId);
-      if (product) {
-        const buyPriceChanged = product.buyPrice !== item.unitPrice;
-        await db.products.update(item.productId, {
-          quantity: product.quantity + item.quantity,
-          buyPrice: item.unitPrice,
-          updatedAt: now,
-          syncStatus: 'pending',
-        });
-        if (buyPriceChanged) {
-          await db.priceHistory.add({
-            id: generateId(),
-            productId: item.productId,
-            oldBuyPrice: product.buyPrice,
-            newBuyPrice: item.unitPrice,
-            oldSellPrice: product.sellPrice,
-            newSellPrice: product.sellPrice,
-            userId: currentUser?.id,
-            createdAt: now,
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-        }
-        await db.stockMovements.add({
+      if (!product) continue;
+
+      const buyPriceChanged = product.buyPrice !== item.unitPrice;
+      await db.products.update(item.productId, {
+        quantity: product.quantity + item.quantity,
+        buyPrice: item.unitPrice,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      if (buyPriceChanged) {
+        await db.priceHistory.add({
           id: generateId(),
           productId: item.productId,
-          productName: item.productName,
-          type: 'entree',
-          quantity: item.quantity,
-          date: now,
-          reason: `Reception commande fournisseur #${order.id.slice(0, 8)}`,
-          userId: currentUser?.id,
+          oldBuyPrice: product.buyPrice,
+          newBuyPrice: item.unitPrice,
+          oldSellPrice: product.sellPrice,
+          newSellPrice: product.sellPrice,
+          userId: currentUser.id,
           createdAt: now,
           updatedAt: now,
           syncStatus: 'pending',
         });
       }
-    }
 
-    await db.supplierOrders.update(order.id, {
-      status: 'recue',
-      isCredit: paymentMode === 'credit',
-      updatedAt: now,
-      syncStatus: 'pending',
-    });
-
-    if (paymentMode === 'credit') {
-      const supplier = await db.suppliers.get(order.supplierId);
-      if (supplier) {
-        await db.suppliers.update(order.supplierId, {
-          creditBalance: (supplier.creditBalance ?? 0) + order.total,
-          updatedAt: now,
-          syncStatus: 'pending',
-        });
-      }
-      await db.supplierCreditTransactions.add({
+      await db.stockMovements.add({
         id: generateId(),
-        supplierId: order.supplierId,
-        orderId: order.id,
-        amount: order.total,
-        type: 'credit',
+        productId: item.productId,
+        productName: item.productName,
+        type: 'entree',
+        quantity: item.quantity,
         date: now,
-        note: `Commande #${order.id.slice(0, 8)} recue a credit`,
+        reason: `Reception commande fournisseur #${order.id.slice(0, 8)}`,
+        userId: currentUser.id,
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
       });
-    } else {
+    }
+
+    await db.supplierOrders.update(order.id, {
+      status: 'recue',
+      deposit: amountPaid,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    // Créer les transactions appropriées
+    if (amountPaid > 0) {
       await db.supplierCreditTransactions.add({
         id: generateId(),
         supplierId: order.supplierId,
         orderId: order.id,
-        amount: order.total,
+        amount: amountPaid,
         type: 'payment',
         date: now,
-        note: `Commande #${order.id.slice(0, 8)} payee`,
+        note: `Commande #${order.id.slice(0, 8)} - Paiement${paymentMode === 'partial' ? ' partiel' : ''}`,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+    }
+
+    if (remaining > 0) {
+      const supplier = await db.suppliers.get(order.supplierId);
+      if (supplier) {
+        await db.suppliers.update(order.supplierId, {
+          creditBalance: (supplier.creditBalance ?? 0) + remaining,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
+
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: order.supplierId,
+        orderId: order.id,
+        amount: remaining,
+        type: 'credit',
+        date: now,
+        note: `Commande #${order.id.slice(0, 8)} - ${paymentMode === 'partial' ? 'Reste après acompte' : 'Credit fournisseur'}`,
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
@@ -312,8 +338,17 @@ export function SuppliersPage() {
       action: 'reception_commande',
       entity: 'commande',
       entityId: order.id,
-      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)} - ${paymentMode === 'credit' ? 'Credit fournisseur' : 'Payee'}`,
+      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)}${amountPaid > 0 ? ` - Payé: ${formatCurrency(amountPaid)}` : ''}${remaining > 0 ? ` - Reste: ${formatCurrency(remaining)}` : ''}`,
     });
+
+    setReceiveModalOpen(false);
+    toast.success(
+      remaining === 0 
+        ? 'Commande recue et payée' 
+        : amountPaid > 0 
+        ? 'Commande recue avec paiement partiel' 
+        : 'Commande recue a credit'
+    );
   };
 
   const handleCreditSubmit = async (e: FormEvent) => {
@@ -358,6 +393,7 @@ export function SuppliersPage() {
   const handleDelete = async (id: string) => {
     const supplier = await db.suppliers.get(id);
     if (!supplier) return;
+    
     const ok = await confirmAction({
       title: 'Supprimer le fournisseur',
       message: `Supprimer le fournisseur « ${supplier.name} » ?\n\nSes commandes associées seront conservées.`,
@@ -365,10 +401,20 @@ export function SuppliersPage() {
       variant: 'danger',
     });
     if (!ok) return;
-    const now = nowISO();
-    await db.suppliers.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-    await trackDeletion('suppliers', id);
-    await logAction({ action: 'suppression', entity: 'fournisseur', entityId: id, entityName: supplier.name });
+  
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
+      const now = nowISO();
+      await db.suppliers.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+      await trackDeletion('suppliers', id);
+      await logAction({ action: 'suppression', entity: 'fournisseur', entityId: id, entityName: supplier.name });
+  
+      toast.dismiss(loadingToast);
+      toast.success(`Fournisseur « ${supplier.name} » supprimé`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
+    }
   };
 
   const addOrderProduct = () => {
@@ -580,22 +626,13 @@ export function SuppliersPage() {
                       <span className="font-semibold text-sm text-text">{formatCurrency(o.total)}</span>
                       <Badge variant={statusVariants[o.status]}>{statusLabels[o.status]}</Badge>
                       {o.status === 'en_attente' && (
-                        <>
-                          <button
-                          onClick={() => receiveOrder(o, 'cash')}
+                        <button
+                          onClick={() => openReceive(o)}
                           className="p-1.5 rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 text-emerald-700 dark:text-emerald-400"
-                          title="Marquer comme reçue"
+                          title="Recevoir la commande"
                         >
                           <PackageCheck size={16} />
                         </button>
-                          <button
-                            onClick={() => receiveOrder(o, 'credit')}
-                          className="p-1.5 rounded bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-800/60 text-amber-700 dark:text-amber-400"
-                          title="Marquer recue a credit"
-                        >
-                          <CreditCard size={16} />
-                        </button>
-                        </>
                       )}
                     </div>
                   </div>
@@ -604,6 +641,118 @@ export function SuppliersPage() {
             </div>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        open={receiveModalOpen}
+        onClose={() => setReceiveModalOpen(false)}
+        title={`Recevoir la commande #${receiveOrderData?.id.slice(0, 8) ?? ''}`}
+        className="max-w-xl"
+      >
+        {receiveOrderData && (
+          <form onSubmit={handleReceive} className="space-y-4">
+            <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-muted">Total commande</span>
+                <span className="font-bold text-lg text-text">{formatCurrency(receiveOrderData.total)}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-text mb-2">Mode de paiement</label>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('cash');
+                    setDeposit(receiveOrderData.total);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors text-left ${
+                    paymentMode === 'cash'
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  💵 Payer comptant ({formatCurrency(receiveOrderData.total)})
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('partial');
+                    setDeposit(0);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors text-left ${
+                    paymentMode === 'partial'
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  💳 Paiement partiel
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('credit');
+                    setDeposit(0);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors text-left ${
+                    paymentMode === 'credit'
+                      ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  📋 Tout à crédit
+                </button>
+              </div>
+            </div>
+
+            {paymentMode === 'partial' && (
+              <Input
+                id="deposit"
+                label="Montant payé (acompte)"
+                type="number"
+                min={0}
+                max={receiveOrderData.total}
+                value={deposit || ''}
+                onChange={(e) => setDeposit(Number(e.target.value) || 0)}
+                placeholder="Ex : 50000"
+                required
+              />
+            )}
+
+            {paymentMode === 'partial' && deposit > 0 && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-blue-700 dark:text-blue-400">Montant payé</span>
+                  <span className="font-semibold text-blue-800 dark:text-blue-300">{formatCurrency(deposit)}</span>
+                </div>
+                <div className="flex justify-between text-sm border-t border-blue-200 dark:border-blue-800 pt-1">
+                  <span className="font-medium text-blue-700 dark:text-blue-400">Reste à payer (crédit)</span>
+                  <span className="font-bold text-blue-800 dark:text-blue-300">{formatCurrency(receiveOrderData.total - deposit)}</span>
+                </div>
+              </div>
+            )}
+
+            {paymentMode === 'credit' && (
+              <div className="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-3">
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  ⚠️ Le montant total de <span className="font-bold">{formatCurrency(receiveOrderData.total)}</span> sera ajouté au crédit fournisseur.
+                </p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" type="button" onClick={() => setReceiveModalOpen(false)}>
+                Annuler
+              </Button>
+              <Button type="submit">
+                Confirmer la réception
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
 
       <Modal
