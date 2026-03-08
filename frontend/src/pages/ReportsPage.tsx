@@ -191,13 +191,11 @@ export function ReportsPage() {
 
   const customerCreditNetById = useMemo(() => {
     const map = new Map<string, number>();
-    for (const t of customerCreditTransactions) {
-      if (t.deleted || !inSelectedRange(t.date)) continue;
-      const sign = t.type === 'credit' ? 1 : -1;
-      map.set(t.customerId, (map.get(t.customerId) ?? 0) + sign * t.amount);
+    for (const customer of customers) {
+      map.set(customer.id, Math.max(0, customer.creditBalance ?? 0));
     }
     return map;
-  }, [customerCreditTransactions, startDate, dateFrom, dateTo]);
+  }, [customers]);
 
   const totalCustomerOrderEntries = useMemo(
     () => customerOrderCashEntries.reduce((sum, e) => sum + e.amount, 0),
@@ -243,13 +241,11 @@ export function ReportsPage() {
 
   const supplierCreditNetById = useMemo(() => {
     const map = new Map<string, number>();
-    for (const t of supplierCreditTransactions) {
-      if (t.deleted || !inSelectedRange(t.date)) continue;
-      const sign = t.type === 'credit' ? 1 : -1;
-      map.set(t.supplierId, (map.get(t.supplierId) ?? 0) + sign * t.amount);
+    for (const supplier of suppliers) {
+      map.set(supplier.id, Math.max(0, supplier.creditBalance ?? 0));
     }
     return map;
-  }, [supplierCreditTransactions, startDate, dateFrom, dateTo]);
+  }, [suppliers]);
 
   const totalSupplierPayments = useMemo(
     () => filteredSupplierPayments.reduce((sum, t) => sum + t.amount, 0),

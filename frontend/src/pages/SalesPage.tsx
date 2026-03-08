@@ -131,6 +131,16 @@ export function SalesPage() {
     );
   };
 
+  const updateCartUnitPrice = (productId: string, unitPrice: number) => {
+    setCart(
+      cart.map((c) =>
+        c.productId === productId
+          ? { ...c, unitPrice: Math.max(0, unitPrice) }
+          : c
+      )
+    );
+  };
+
   const removeFromCart = (productId: string) => {
     setCart(cart.filter((c) => c.productId !== productId));
   };
@@ -561,7 +571,9 @@ export function SalesPage() {
                           className="w-16 text-center rounded border border-border bg-surface text-text px-1 py-0.5"
                         />
                       </td>
-                      <td className="px-3 py-2 text-right">{formatCurrency(item.unitPrice)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <input type="number" min={0} step="0.01" value={item.unitPrice} onChange={(e) => updateCartUnitPrice(item.productId, Number(e.target.value) || 0) } className="w-24 text-right rounded border border-border bg-surface text-text px-1 py-0.5"/>
+                      </td>
                       <td className="px-3 py-2 text-right font-medium">
                         {formatCurrency(item.quantity * item.unitPrice)}
                       </td>
@@ -728,4 +740,3 @@ export function SalesPage() {
     </div>
   );
 }
-

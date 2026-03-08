@@ -824,16 +824,24 @@ export function SuppliersPage() {
         {supplierTransactions.length > 0 && (
           <div className="mt-6 border-t border-border pt-4">
             <h4 className="text-sm font-semibold text-text mb-2">Historique credit fournisseur</h4>
-            <div className="space-y-2 max-h-48 overflow-y-auto">
+            <div className="max-h-56 overflow-y-auto rounded-lg border border-border divide-y divide-border/60">
               {supplierTransactions.map((t) => (
-                <div key={t.id} className="flex items-center justify-between text-sm py-1.5 border-b border-border/50">
-                  <div>
-                    <span className={t.type === 'payment' ? 'text-emerald-600' : 'text-red-600'}>
-                      {t.type === 'payment' ? 'Paiement' : 'Credit'}
-                    </span>
-                    {t.note && <span className="text-text-muted ml-2">- {t.note}</span>}
+                 <div key={t.id} className="px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium text-text">
+                        <span className={t.type === 'payment' ? 'text-emerald-600' : 'text-red-600'}>
+                          {t.type === 'payment' ? 'Paiement fournisseur' : 'Nouveau credit'}
+                        </span>
+                        {t.orderId && <span className="text-text-muted"> · Cmd #{t.orderId.slice(0, 8)}</span>}
+                      </p>
+                      <p className="text-xs text-text-muted">Date: {formatDate(t.date)}</p>
+                      {t.note && <p className="text-xs text-text-muted break-words">Note: {t.note}</p>}
+                    </div>
+                    <p className={`font-semibold whitespace-nowrap ${t.type === 'payment' ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {t.type === 'payment' ? '-' : '+'}{formatCurrency(t.amount)}
+                    </p>
                   </div>
-                  <p className="font-medium text-text">{formatCurrency(t.amount)}</p>
                 </div>
               ))}
             </div>

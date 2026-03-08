@@ -441,7 +441,7 @@ export function CustomerOrdersPage() {
             ) : (
               filteredOrders.map((o) => (
                 <Tr key={o.id}>
-                  <Td className="font-mono text-xs">#{o.id.slice(0, 8)}</Td>
+                  <Td className="font-mono text-xs">#{o.id}</Td>
                   <Td className="font-medium">{o.customerName}</Td>
                   {isGerant && (
                     <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? '' : ''}</Td>
@@ -452,7 +452,7 @@ export function CustomerOrdersPage() {
                     {o.deposit > 0 ? (
                       <span className="text-emerald-600 font-medium">{formatCurrency(o.deposit)}</span>
                     ) : (
-                      <span className="text-text-muted"></span>
+                      <span className="text-text-muted">—</span>
                     )}
                   </Td>
                   <Td>
@@ -461,7 +461,7 @@ export function CustomerOrdersPage() {
                         {paymentLabels[o.effectivePaymentMethod]}
                       </Badge>
                     ) : (
-                      <span className="text-text-muted"></span>
+                      <span className="text-text-muted">En attente</span>
                     )}
                   </Td>
                   <Td>

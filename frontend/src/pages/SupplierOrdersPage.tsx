@@ -28,6 +28,11 @@ const statusVariants: Record<OrderStatus, 'warning' | 'success' | 'danger'> = {
   annulee: 'danger',
 };
 
+const paymentLabels = {
+  cash: 'Comptant',
+  credit: 'Crédit',
+} as const;
+
 interface SupplierOrderLine {
   productId: string;
   productName: string;
@@ -227,6 +232,8 @@ export function SupplierOrdersPage() {
     await db.supplierOrders.update(order.id, {
       status: 'recue',
       deposit: amountPaid,
+      isCredit: remaining > 0,
+      paymentMethod: remaining > 0 ? 'credit' : 'cash',
       updatedAt: now,
       syncStatus: 'pending',
     });
@@ -402,33 +409,47 @@ export function SupplierOrdersPage() {
               <Th>Crée par</Th>
               <Th>Date</Th>
               <Th>Total</Th>
-              <Th>Statut</Th>
+              <Th>Acompte</Th>
               <Th>Paiement</Th>
+              <Th>Statut</Th>
               <Th />
             </Tr>
           </Thead>
           <Tbody>
             {filteredOrders.length === 0 ? (
               <Tr>
-                <Td colSpan={8} className="text-center text-text-muted py-8">
+                <Td colSpan={9} className="text-center text-text-muted py-8">
                   Aucune commande trouvée
                 </Td>
               </Tr>
             ) : (
               filteredOrders.map((o) => (
                 <Tr key={o.id}>
-                  <Td className="font-mono text-xs">#{o.id.slice(0, 8)}</Td>
+                  <Td className="font-mono text-xs">#{o.id}</Td>
                   <Td className="font-medium">{o.supplierName}</Td>
                   <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? '—' : '—'}</Td>
                   <Td className="text-text-muted">{formatDate(o.date)}</Td>
                   <Td className="font-semibold">{formatCurrency(o.total)}</Td>
                   <Td>
-                    <Badge variant={statusVariants[o.status]}>{statusLabels[o.status]}</Badge>
+                    {o.deposit > 0 ? (
+                      <span className="text-emerald-600 font-medium">{formatCurrency(o.deposit)}</span>
+                    ) : (
+                      <span className="text-text-muted">—</span>
+                    )}
                   </Td>
                   <Td>
-                    {o.status === 'recue'
-                      ? (o.isCredit ? 'Credit' : 'Payée')
-                      : '—'}
+                    {o.status === 'recue' ? (
+                      <Badge
+                        variant={o.isCredit ? (o.deposit > 0 ? 'warning' : 'danger') : 'success'}
+                      >
+                        {o.isCredit ? (o.deposit > 0 ? 'Crédit (partiel)' : paymentLabels.credit) : paymentLabels.cash}
+                      </Badge>
+                    ) : (
+                      <span className="text-text-muted">En attente</span>
+                    )}
+                  </Td>
+                  <Td>
+                    <Badge variant={statusVariants[o.status]}>{statusLabels[o.status]}</Badge>
                   </Td>
                   <Td>
                     <div className="flex gap-1">
