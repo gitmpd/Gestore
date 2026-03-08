@@ -28,6 +28,32 @@ function Test-Tool([string]$Name) {
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Refresh-PathFromRegistry {
+  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $parts = @()
+  if ($machinePath) { $parts += $machinePath }
+  if ($userPath) { $parts += $userPath }
+  if ($parts.Count -gt 0) {
+    $env:Path = ($parts -join ';')
+  }
+}
+
+function Resolve-ToolPath([string]$Name, [string[]]$Fallbacks = @()) {
+  $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($cmd) {
+    return $cmd.Source
+  }
+
+  foreach ($candidate in $Fallbacks) {
+    if (Test-Path -Path $candidate) {
+      return $candidate
+    }
+  }
+
+  return $null
+}
+
 function Install-WithWinget([string]$PackageId, [string]$Label) {
   if (-not (Test-Tool 'winget')) {
     throw "winget n'est pas disponible pour installer automatiquement $Label."
@@ -41,20 +67,48 @@ function Install-WithWinget([string]$PackageId, [string]$Label) {
 }
 
 function Ensure-Prerequisites {
-  if (-not (Test-Tool 'node')) {
+  Refresh-PathFromRegistry
+
+  $nodePath = Resolve-ToolPath -Name 'node' -Fallbacks @(
+    "$env:ProgramFiles\nodejs\node.exe",
+    "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+  )
+  if (-not $nodePath) {
     Install-WithWinget -PackageId 'OpenJS.NodeJS.LTS' -Label 'Node.js LTS'
+     Refresh-PathFromRegistry
+    $nodePath = Resolve-ToolPath -Name 'node' -Fallbacks @(
+      "$env:ProgramFiles\nodejs\node.exe",
+      "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+    )
+  }
+  if (-not $nodePath) {
+    throw 'Node.js est introuvable apres installation automatique. Verifiez l installation Node.js.'
   }
 
-  if (-not (Test-Tool 'npm')) {
-    throw 'npm est introuvable meme après installation de Node.js.'
+  $npmPath = Resolve-ToolPath -Name 'npm' -Fallbacks @(
+  "$env:ProgramFiles\nodejs\npm.cmd",
+  "$env:LOCALAPPDATA\Programs\nodejs\npm.cmd"
+  )
+  if (-not $npmPath) {
+    throw 'npm est introuvable meme apres installation de Node.js.'
   }
 
-  if (-not (Test-Tool 'psql')) {
-    Install-WithWinget -PackageId 'PostgreSQL.PostgreSQL' -Label 'PostgreSQL (psql)'
+  $psqlPath = Resolve-ToolPath -Name 'psql' -Fallbacks @(
+    "$env:ProgramFiles\PostgreSQL\16\bin\psql.exe",
+    "$env:ProgramFiles\PostgreSQL\15\bin\psql.exe",
+    "$env:ProgramFiles\PostgreSQL\14\bin\psql.exe"
+  )
+  if (-not $psqlPath) {
+    Refresh-PathFromRegistry
+    $psqlPath = Resolve-ToolPath -Name 'psql' -Fallbacks @(
+      "$env:ProgramFiles\PostgreSQL\16\bin\psql.exe",
+      "$env:ProgramFiles\PostgreSQL\15\bin\psql.exe",
+      "$env:ProgramFiles\PostgreSQL\14\bin\psql.exe"
+    )
   }
 
-  if (-not (Test-Tool 'psql')) {
-    throw 'psql est introuvable. Verifiez PostgreSQL et redemarrez la session Windows.'
+  if (-not $psqlPath) {
+    throw 'psql est introuvable apres installation automatique. Verifiez PostgreSQL puis relancez le script.'
   }
 
   Write-Ok 'Prerequis verifies.'
