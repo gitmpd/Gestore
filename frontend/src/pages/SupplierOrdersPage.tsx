@@ -6,19 +6,20 @@ import { Plus, Search, Trash2, PackageCheck, XCircle, Eye, ArrowLeft, CreditCard
 import { db } from '@/db';
 import type { OrderStatus, SupplierOrder } from '@/types';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input'; // pour le depot
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 
 const statusLabels: Record<OrderStatus, string> = {
   en_attente: 'En attente',
   recue: 'Recue',
-  annulee: 'Annulee',
+  annulee: 'Annulée',
 };
 
 const statusVariants: Record<OrderStatus, 'warning' | 'success' | 'danger'> = {
@@ -26,6 +27,11 @@ const statusVariants: Record<OrderStatus, 'warning' | 'success' | 'danger'> = {
   recue: 'success',
   annulee: 'danger',
 };
+
+const paymentLabels = {
+  cash: 'Comptant',
+  credit: 'Crédit',
+} as const;
 
 interface SupplierOrderLine {
   productId: string;
@@ -44,12 +50,17 @@ export function SupplierOrdersPage() {
   const [dateTo, setDateTo] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [receiveModalOpen, setReceiveModalOpen] = useState(false);
 
   const [supplierId, setSupplierId] = useState('');
   const [orderLines, setOrderLines] = useState<SupplierOrderLine[]>([]);
 
   const [detailOrder, setDetailOrder] = useState<(SupplierOrder & { supplierName: string }) | null>(null);
   const [detailItems, setDetailItems] = useState<{ productName: string; quantity: number; unitPrice: number; total: number }[]>([]);
+
+  const [receiveOrderData, setReceiveOrderData] = useState<(SupplierOrder & { supplierName: string }) | null>(null);
+  const [deposit, setDeposit] = useState(0);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'partial' | 'credit'>('cash');
 
   const suppliers = useLiveQuery(async () => (await db.suppliers.orderBy('name').toArray()).filter((s) => !s.deleted)) ?? [];
   const allProducts = useLiveQuery(async () => (await db.products.orderBy('name').toArray()).filter((p) => !p.deleted)) ?? [];
@@ -113,7 +124,7 @@ export function SupplierOrdersPage() {
     if (!supplierId || orderLines.length === 0 || !user) return;
 
     const now = nowISO();
-    const orderId = generateId();
+    const orderId = generateSupplierOrderRef();
     const total = orderLines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
 
     await db.supplierOrders.add({
@@ -121,6 +132,7 @@ export function SupplierOrdersPage() {
       supplierId,
       date: now,
       total,
+      deposit: 0,
       status: 'en_attente',
       userId: user.id,
       createdAt: now,
@@ -153,13 +165,27 @@ export function SupplierOrdersPage() {
     });
 
     setCreateModalOpen(false);
-    toast.success('Commande fournisseur creee');
+    toast.success('Commande fournisseur créée');
   };
 
-  const receiveOrder = async (order: SupplierOrder & { supplierName: string }, paymentMode: 'cash' | 'credit') => {
-    if (!user) return;
+  const openReceive = (order: SupplierOrder & { supplierName: string }) => {
+    setReceiveOrderData(order);
+    setDeposit(0);
+    setPaymentMode('cash');
+    setReceiveModalOpen(true);
+  };
+
+  const handleReceive = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!receiveOrderData || !user) return;
+    
+    const order = receiveOrderData;
     const now = nowISO();
     const items = await db.orderItems.where('orderId').equals(order.id).toArray();
+
+    // Calculer le montant payé et le reste
+    const amountPaid = paymentMode === 'credit' ? 0 : (paymentMode === 'partial' ? deposit : order.total);
+    const remaining = order.total - amountPaid;
 
     for (const item of items) {
       const product = await db.products.get(item.productId);
@@ -205,16 +231,36 @@ export function SupplierOrdersPage() {
 
     await db.supplierOrders.update(order.id, {
       status: 'recue',
-      isCredit: paymentMode === 'credit',
+      deposit: amountPaid,
+      isCredit: remaining > 0,
+      paymentMethod: remaining > 0 ? 'credit' : 'cash',
       updatedAt: now,
       syncStatus: 'pending',
     });
 
-    if (paymentMode === 'credit') {
+    // Créer les transactions appropriées
+    if (amountPaid > 0) {
+      // Transaction de paiement pour le montant payé
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: order.supplierId,
+        orderId: order.id,
+        amount: amountPaid,
+        type: 'payment',
+        date: now,
+        note: `Commande #${order.id.slice(0, 8)} - Paiement${paymentMode === 'partial' ? ' partiel' : ''}`,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+    }
+
+    if (remaining > 0) {
+      // Transaction de crédit pour le reste
       const supplier = await db.suppliers.get(order.supplierId);
       if (supplier) {
         await db.suppliers.update(order.supplierId, {
-          creditBalance: (supplier.creditBalance ?? 0) + order.total,
+          creditBalance: (supplier.creditBalance ?? 0) + remaining,
           updatedAt: now,
           syncStatus: 'pending',
         });
@@ -224,23 +270,10 @@ export function SupplierOrdersPage() {
         id: generateId(),
         supplierId: order.supplierId,
         orderId: order.id,
-        amount: order.total,
+        amount: remaining,
         type: 'credit',
         date: now,
-        note: `Commande #${order.id.slice(0, 8)} recue a credit`,
-        createdAt: now,
-        updatedAt: now,
-        syncStatus: 'pending',
-      });
-    } else {
-      await db.supplierCreditTransactions.add({
-        id: generateId(),
-        supplierId: order.supplierId,
-        orderId: order.id,
-        amount: order.total,
-        type: 'payment',
-        date: now,
-        note: `Commande #${order.id.slice(0, 8)} payee`,
+        note: `Commande #${order.id.slice(0, 8)} - ${paymentMode === 'partial' ? 'Reste après acompte' : 'Credit fournisseur'}`,
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
@@ -252,10 +285,17 @@ export function SupplierOrdersPage() {
       entity: 'commande',
       entityId: order.id,
       entityName: order.supplierName,
-      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)} - ${paymentMode === 'credit' ? 'Credit fournisseur' : 'Payee'}`,
+      details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)}${amountPaid > 0 ? ` - Payé: ${formatCurrency(amountPaid)}` : ''}${remaining > 0 ? ` - Reste: ${formatCurrency(remaining)}` : ''}`,
     });
 
-    toast.success(paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande recue et payee');
+    setReceiveModalOpen(false);
+    toast.success(
+      remaining === 0 
+        ? 'Commande recue et payée' 
+        : amountPaid > 0 
+        ? 'Commande recue avec paiement partiel' 
+        : 'Commande recue a credit'
+    );
   };
 
   const handleCancel = async (order: SupplierOrder & { supplierName: string }) => {
@@ -366,41 +406,56 @@ export function SupplierOrdersPage() {
             <Tr>
               <Th>N°</Th>
               <Th>Fournisseur</Th>
-              <Th>Cree par</Th>
+              <Th>Crée par</Th>
               <Th>Date</Th>
               <Th>Total</Th>
-              <Th>Statut</Th>
+              <Th>Acompte</Th>
               <Th>Paiement</Th>
+              <Th>Statut</Th>
+              <Th>Actions</Th>
               <Th />
             </Tr>
           </Thead>
           <Tbody>
             {filteredOrders.length === 0 ? (
               <Tr>
-                <Td colSpan={8} className="text-center text-text-muted py-8">
-                  Aucune commande trouvee
+                <Td colSpan={9} className="text-center text-text-muted py-8">
+                  Aucune commande trouvée
                 </Td>
               </Tr>
             ) : (
               filteredOrders.map((o) => (
-                <Tr key={o.id}>
-                  <Td className="font-mono text-xs">#{o.id.slice(0, 8)}</Td>
+                <Tr key={o.id} onClick={() => openDetail(o)} className="cursor-pointer hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                  <Td className="font-mono text-xs">#{o.id}</Td>
                   <Td className="font-medium">{o.supplierName}</Td>
                   <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? '—' : '—'}</Td>
                   <Td className="text-text-muted">{formatDate(o.date)}</Td>
                   <Td className="font-semibold">{formatCurrency(o.total)}</Td>
                   <Td>
-                    <Badge variant={statusVariants[o.status]}>{statusLabels[o.status]}</Badge>
+                    {o.deposit > 0 ? (
+                      <span className="text-emerald-600 font-medium">{formatCurrency(o.deposit)}</span>
+                    ) : (
+                      <span className="text-text-muted">—</span>
+                    )}
                   </Td>
                   <Td>
-                    {o.status === 'recue'
-                      ? (o.isCredit ? 'Credit' : 'Payee')
-                      : '—'}
+                    {o.status === 'recue' ? (
+                      <Badge
+                        variant={o.isCredit ? (o.deposit > 0 ? 'warning' : 'danger') : 'success'}
+                      >
+                        {o.isCredit ? (o.deposit > 0 ? 'Crédit (partiel)' : paymentLabels.credit) : paymentLabels.cash}
+                      </Badge>
+                    ) : (
+                      <span className="text-text-muted">—</span>
+                    )}
+                  </Td>
+                  <Td>
+                    <Badge variant={statusVariants[o.status]}>{statusLabels[o.status]}</Badge>
                   </Td>
                   <Td>
                     <div className="flex gap-1">
                       <button
-                        onClick={() => openDetail(o)}
+                        onClick={(e) => { e.stopPropagation(); openDetail(o); }}
                         className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
                         title="Details"
                       >
@@ -409,21 +464,14 @@ export function SupplierOrdersPage() {
                       {o.status === 'en_attente' && (
                         <>
                           <button
-                            onClick={() => receiveOrder(o, 'cash')}
+                            onClick={(e) => { e.stopPropagation(); openReceive(o); }}
                             className="p-1.5 rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 text-emerald-700 dark:text-emerald-400"
-                            title="Marquer recue et payee"
+                            title="Recevoir la commande"
                           >
                             <PackageCheck size={16} />
                           </button>
                           <button
-                            onClick={() => receiveOrder(o, 'credit')}
-                            className="p-1.5 rounded bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-800/60 text-amber-700 dark:text-amber-400"
-                            title="Marquer recue a credit"
-                          >
-                            <CreditCard size={16} />
-                          </button>
-                          <button
-                            onClick={() => handleCancel(o)}
+                            onClick={(e) => { e.stopPropagation(); handleCancel(o); }}
                             className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
                             title="Annuler"
                           >
@@ -498,7 +546,7 @@ export function SupplierOrdersPage() {
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
                     placeholder="Prix"
-                    value={line.unitPrice}
+                    value={line.unitPrice === 0 ? "" : line.unitPrice}
                     onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
                     required
                   />
@@ -527,7 +575,7 @@ export function SupplierOrdersPage() {
               Annuler
             </Button>
             <Button type="submit" disabled={!supplierId || orderLines.length === 0}>
-              Creer la commande
+              Créer la commande
             </Button>
           </div>
         </form>
@@ -588,6 +636,122 @@ export function SupplierOrdersPage() {
               <span className="text-lg font-bold text-text">{formatCurrency(detailOrder.total)}</span>
             </div>
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={receiveModalOpen}
+        onClose={() => setReceiveModalOpen(false)}
+        title={`Recevoir la commande #${receiveOrderData?.id.slice(0, 8) ?? ''}`}
+        className="max-w-xl"
+      >
+        {receiveOrderData && (
+          <form onSubmit={handleReceive} className="space-y-4">
+            <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-muted">Fournisseur</span>
+                <span className="font-medium text-text">{receiveOrderData.supplierName}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-text-muted">Total commande</span>
+                <span className="font-bold text-lg text-text">{formatCurrency(receiveOrderData.total)}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-text mb-2">Mode de paiement</label>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('cash');
+                    setDeposit(receiveOrderData.total);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors text-left ${
+                    paymentMode === 'cash'
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  💵 Payer comptant ({formatCurrency(receiveOrderData.total)})
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('partial');
+                    setDeposit(0);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors text-left ${
+                    paymentMode === 'partial'
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  💳 Paiement partiel
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('credit');
+                    setDeposit(0);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors text-left ${
+                    paymentMode === 'credit'
+                      ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  📋 Tout à crédit
+                </button>
+              </div>
+            </div>
+
+            {paymentMode === 'partial' && (
+              <Input
+                id="deposit"
+                label="Montant payé (acompte)"
+                type="number"
+                min={0}
+                max={receiveOrderData.total}
+                value={deposit || ''}
+                onChange={(e) => setDeposit(Number(e.target.value) || 0)}
+                placeholder="Ex : 50000"
+                required
+              />
+            )}
+
+            {paymentMode === 'partial' && deposit > 0 && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-blue-700 dark:text-blue-400">Montant payé</span>
+                  <span className="font-semibold text-blue-800 dark:text-blue-300">{formatCurrency(deposit)}</span>
+                </div>
+                <div className="flex justify-between text-sm border-t border-blue-200 dark:border-blue-800 pt-1">
+                  <span className="font-medium text-blue-700 dark:text-blue-400">Reste à payer (crédit)</span>
+                  <span className="font-bold text-blue-800 dark:text-blue-300">{formatCurrency(receiveOrderData.total - deposit)}</span>
+                </div>
+              </div>
+            )}
+
+            {paymentMode === 'credit' && (
+              <div className="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-3">
+                <p className="text-sm text-amber-700 dark:text-amber-400">
+                  ⚠️ Le montant total de <span className="font-bold">{formatCurrency(receiveOrderData.total)}</span> sera ajouté au crédit fournisseur.
+                </p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" type="button" onClick={() => setReceiveModalOpen(false)}>
+                Annuler
+              </Button>
+              <Button type="submit">
+                Confirmer la réception
+              </Button>
+            </div>
+          </form>
         )}
       </Modal>
     </div>

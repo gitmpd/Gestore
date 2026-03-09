@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireRole } from '../middleware/auth';
 
 const router = Router();
 const prisma = new PrismaClient();
 
 router.use(authenticate);
+router.use(requireRole('gerant'));
 
 router.delete('/reset-database', async (_req, res) => {
   try {

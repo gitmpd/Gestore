@@ -74,38 +74,23 @@ router.post('/login', async (req, res) => {
   }
 });
 
-router.post('/change-password', async (req, res) => {
+router.post('/change-password', authenticate, async (req: AuthRequest, res) => {
   try {
-    const { newPassword, name, email } = req.body;
+    const { newPassword, name } = req.body;
 
     if (!newPassword || newPassword.length < 6) {
       res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caracteres' });
       return;
     }
 
-    let user;
+    if (!req.userId) {
+      res.status(401).json({ error: 'Utilisateur non authentifie' });
+      return;
+    }
 
-    if (req.headers.authorization?.startsWith('Bearer ')) {
-      try {
-        const token = req.headers.authorization.slice(7);
-        const payload = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string; role: string };
-        user = await prisma.user.findUnique({ where: { id: payload.userId } });
-        if (!user) {
-          res.status(404).json({ error: 'Utilisateur introuvable' });
-          return;
-        }
-      } catch {
-        res.status(401).json({ error: 'Token invalide' });
-        return;
-      }
-    } else if (email) {
-      user = await prisma.user.findUnique({ where: { email } });
-      if (!user) {
-        res.status(404).json({ error: 'Utilisateur introuvable' });
-        return;
-      }
-    } else {
-      res.status(401).json({ error: 'Token manquant ou email requis' });
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user) {
+      res.status(404).json({ error: 'Utilisateur introuvable' });
       return;
     }
 
@@ -160,11 +145,27 @@ router.post('/register', authenticate, async (req: AuthRequest, res) => {
 router.post('/refresh', async (req, res) => {
   try {
     const { refreshToken } = req.body;
+    if (!refreshToken) {
+      res.status(400).json({ error: 'Refresh token manquant' });
+      return;
+    }
+
     const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as {
       userId: string;
       role: string;
     };
-    const tokens = generateTokens(payload.userId, payload.role);
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { id: true, role: true, active: true },
+    });
+
+    if (!user || !user.active) {
+      res.status(401).json({ error: 'Utilisateur invalide ou inactif' });
+      return;
+    }
+
+    const tokens = generateTokens(user.id, user.role);
     res.json(tokens);
   } catch {
     res.status(401).json({ error: 'Refresh token invalide' });

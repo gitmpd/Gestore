@@ -10,6 +10,49 @@ export function generateId(): string {
   return uuidv4();
 }
 
+export function generateReference(): string {
+  const now = new Date();
+
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+
+  return `REF${yyyy}${mm}${dd}${hh}${min}${ss}`;
+}
+
+export function generateCustomerOrderRef(sequence: number = 1): string {
+  const now = new Date();
+
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+
+  const seq = String(sequence).padStart(3, '0');
+
+  return `CmdClt-${yyyy}${mm}${dd}-${hh}${min}${ss}-${seq}`;
+}
+
+export function generateSupplierOrderRef(sequence: number = 1): string {
+  const now = new Date();
+
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+
+  const seq = String(sequence).padStart(3, '0');
+
+  return `CmdFrs-${yyyy}${mm}${dd}-${hh}${min}${ss}-${seq}`;
+}
+
 export function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('fr-FR', {
     style: 'currency',

@@ -3,7 +3,6 @@ import { useAuthStore } from '@/stores/authStore';
 import { v4 as uuidv4 } from 'uuid';
 
 const TABLES = [
-  'users',
   'categories',
   'products',
   'customers',
@@ -19,6 +18,7 @@ const TABLES = [
   'customerOrders',
   'customerOrderItems',
   'priceHistory',
+  'supplierCreditTransactions',
 ] as const;
 
 type TableName = (typeof TABLES)[number];
@@ -75,9 +75,12 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
 
     for (const tableName of TABLES) {
       const table = getTable(tableName);
-      const pendingRecords = options?.force
-        ? (await table.toArray()).filter((record) => !(record as { deleted?: boolean }).deleted)
+      const pendingRecordsRaw = options?.force
+        ? await table.toArray()
         : await table.where('syncStatus').equals('pending').toArray();
+      const pendingRecords = pendingRecordsRaw.filter(
+        (record) => !(record as { deleted?: boolean }).deleted
+      );
       const lastSync = localStorage.getItem(`lastSync_${tableName}`);
 
       const tableDeletions = pendingDeletions.filter((d) => d.table === tableName);

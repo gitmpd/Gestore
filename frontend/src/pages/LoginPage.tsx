@@ -88,13 +88,13 @@ export function LoginPage() {
         login(data.user, data.token, data.refreshToken);
         await logAction({ action: 'connexion', entity: 'utilisateur', entityName: data.user.name });
 
-        setSyncStatus('Synchronisation des donnees...');
+        setSyncStatus('Synchronisation des données...');
         const syncResult = await syncAll({ force: true });
         if (syncResult.success) {
-          toast.success(`Connecte en ligne. ${syncResult.pulled ?? 0} enregistrements synchronises.`);
+          toast.success(`Connecté en ligne. ${syncResult.pulled ?? 0} enregistrements synchronisés.`);
         } else {
           if (!navigator.onLine || isOfflineLikeSyncError(syncResult.error)) {
-            toast.warning('Connexion reussie. Synchronisation differee (mode hors ligne).', { duration: 5000 });
+            toast.warning('Connexion reussie. Synchronisation differée (mode hors ligne).', { duration: 5000 });
           } else {
             toast.warning(`Connexion reussie, mais sync differee: ${syncResult.error}`, { duration: 6000 });
           }

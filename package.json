@@ -8,6 +8,8 @@
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",
     "dev": "cd frontend && npm run dev",
+    "app:start": "node gestionstore-app.js start",
+    "app:stop": "node gestionstore-app.js stop",
     "build": "cd frontend && npm run build",
     "preview": "cd frontend && npm run preview"
   },

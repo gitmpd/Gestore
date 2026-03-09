@@ -22,7 +22,7 @@ Notes:
 
 ## 3. Flux metier principal
 
-### Approvisionnement (entree de stock)
+### Approvisionnement (entrée de stock)
 1. Aller dans `Commandes fournisseurs`
 2. Creer une commande
 3. Valider/recevoir la commande
@@ -59,7 +59,7 @@ Conseil:
 
 ## 6. Utilisation sur plusieurs appareils
 
-1. Lancer `one-click.bat` (ou `./one-click.sh`) sur le PC principal
+1. Lancer `Lancer-GestionStore.bat` (ou `npm run app:start`) sur le PC principal
 2. Connecter tous les appareils au meme Wi-Fi
 3. Depuis `Parametres`, copier l'adresse reseau du PC principal
 4. Ouvrir cette adresse sur le telephone/autre PC

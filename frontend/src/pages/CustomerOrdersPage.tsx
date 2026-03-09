@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -12,10 +12,9 @@ import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateCustomerOrderRef } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
-
 const statusLabels: Record<CustomerOrderStatus, string> = {
   en_attente: 'En attente',
   livree: 'Livrée',
@@ -92,22 +91,29 @@ export function CustomerOrdersPage() {
     }));
   }) ?? [];
 
-  const filteredOrders = orders.filter((o) => {
-    if (statusFilter !== 'all' && o.status !== statusFilter) return false;
-    if (paymentFilter === 'credit' && o.effectivePaymentMethod !== 'credit') return false;
-    if (paymentFilter === 'non_credit' && (!o.effectivePaymentMethod || o.effectivePaymentMethod === 'credit')) return false;
-    if (dateFrom && o.date < dateFrom) return false;
-    if (dateTo && o.date > dateTo + 'T23:59:59') return false;
-    if (search) {
-      const q = search.toLowerCase();
-      return (
-        o.id.toLowerCase().includes(q) ||
-        o.customerName.toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
-
+  const filteredOrders = useMemo(() => {
+    const customerMap = new Map(customers.map((c) => [c.id, c.name]));
+    return orders.filter((o) => {
+      if (statusFilter !== 'all' && o.status !== statusFilter) return false;
+      if (paymentFilter === 'credit' && o.effectivePaymentMethod !== 'credit') return false;
+      if (paymentFilter === 'non_credit' && (!o.effectivePaymentMethod || o.effectivePaymentMethod === 'credit')) return false;
+      if (dateFrom && o.date < dateFrom) return false;
+      if (dateTo && o.date > dateTo + 'T23:59:59') return false;
+      if (search) {
+        const q = search.toLowerCase();
+        const customerName = o.customerName.toLowerCase();
+        return o.id.toLowerCase().includes(q) || customerName.includes(q);
+      }
+      return true;
+    });
+  }, [orders, search, statusFilter, paymentFilter, dateFrom, dateTo, customers]);
+  const filteredProducts = useMemo(() => {
+    return saleProducts.filter(
+      (p) =>
+        p.quantity > 0 &&
+        (p.name.toLowerCase().includes(search.toLowerCase()) || (p.barcode && p.barcode.includes(search)))
+    );
+  }, [saleProducts, search]);
   const orderTotal = orderLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0);
 
   const openCreate = () => {
@@ -147,7 +153,7 @@ export function CustomerOrdersPage() {
     e.preventDefault();
     if (!customerId || orderLines.length === 0 || !user) return;
     const now = nowISO();
-    const orderId = generateId();
+    const orderId = generateCustomerOrderRef();
 
     await db.customerOrders.add({
       id: orderId,
@@ -185,7 +191,7 @@ export function CustomerOrdersPage() {
       entity: 'commande_client',
       entityId: orderId,
       entityName: customer?.name,
-      details: `${orderLines.length} article(s) â€” ${formatCurrency(orderTotal)} â€” ${paymentLabels[createPaymentMethod]}${deposit > 0 ? ` â€” Acompte: ${formatCurrency(deposit)}` : ''}`,
+      details: `${orderLines.length} article(s)  ${formatCurrency(orderTotal)}  ${paymentLabels[createPaymentMethod]}${deposit > 0 ? `  Acompte: ${formatCurrency(deposit)}` : ''}`,
     });
 
     setCreateModalOpen(false);
@@ -299,7 +305,7 @@ export function CustomerOrdersPage() {
       entity: 'commande_client',
       entityId: deliverOrder.id,
       entityName: customer?.name,
-      details: `Commande #${deliverOrder.id.slice(0, 8)} â€” ${formatCurrency(deliverOrder.total)} â€” ${paymentLabels[deliverPaymentMethod]}${deliverOrder.deposit > 0 ? ` â€” Acompte: ${formatCurrency(deliverOrder.deposit)}` : ''}`,
+      details: `Commande #${deliverOrder.id.slice(0, 8)}  ${formatCurrency(deliverOrder.total)}  ${paymentLabels[deliverPaymentMethod]}${deliverOrder.deposit > 0 ? `  Acompte: ${formatCurrency(deliverOrder.deposit)}` : ''}`,
     });
 
     setDeliverModalOpen(false);
@@ -326,7 +332,7 @@ export function CustomerOrdersPage() {
       entity: 'commande_client',
       entityId: order.id,
       entityName: order.customerName,
-      details: `Commande #${order.id.slice(0, 8)} â€” ${formatCurrency(order.total)}${order.deposit > 0 ? ` â€” Acompte: ${formatCurrency(order.deposit)}` : ''}`,
+      details: `Commande #${order.id.slice(0, 8)}  ${formatCurrency(order.total)}${order.deposit > 0 ? `  Acompte: ${formatCurrency(order.deposit)}` : ''}`,
     });
   };
 
@@ -422,6 +428,7 @@ export function CustomerOrdersPage() {
               <Th>Acompte</Th>
               <Th>Paiement</Th>
               <Th>Statut</Th>
+              <Th>Actions</Th>
               <Th />
             </Tr>
           </Thead>
@@ -434,11 +441,11 @@ export function CustomerOrdersPage() {
               </Tr>
             ) : (
               filteredOrders.map((o) => (
-                <Tr key={o.id}>
-                  <Td className="font-mono text-xs">#{o.id.slice(0, 8)}</Td>
+                <Tr key={o.id} onClick={() => openDetail(o)} className="cursor-pointer hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                  <Td className="font-mono text-xs">#{o.id}</Td>
                   <Td className="font-medium">{o.customerName}</Td>
                   {isGerant && (
-                    <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? 'â€”' : 'â€”'}</Td>
+                    <Td className="text-sm">{o.userId ? userMap.get(o.userId) ?? '' : ''}</Td>
                   )}
                   <Td className="text-text-muted">{formatDate(o.date)}</Td>
                   <Td className="font-semibold">{formatCurrency(o.total)}</Td>
@@ -446,7 +453,7 @@ export function CustomerOrdersPage() {
                     {o.deposit > 0 ? (
                       <span className="text-emerald-600 font-medium">{formatCurrency(o.deposit)}</span>
                     ) : (
-                      <span className="text-text-muted">â€”</span>
+                      <span className="text-text-muted">—</span>
                     )}
                   </Td>
                   <Td>
@@ -455,7 +462,7 @@ export function CustomerOrdersPage() {
                         {paymentLabels[o.effectivePaymentMethod]}
                       </Badge>
                     ) : (
-                      <span className="text-text-muted">â€”</span>
+                      <span className="text-text-muted">—</span>
                     )}
                   </Td>
                   <Td>
@@ -464,7 +471,7 @@ export function CustomerOrdersPage() {
                   <Td>
                     <div className="flex gap-1">
                       <button
-                        onClick={() => openDetail(o)}
+                        onClick={(e) => { e.stopPropagation(); openDetail(o); }}
                         className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
                         title="Détails"
                       >
@@ -473,14 +480,14 @@ export function CustomerOrdersPage() {
                       {o.status === 'en_attente' && (
                         <>
                           <button
-                            onClick={() => openDeliver(o)}
+                            onClick={(e) => { e.stopPropagation(); openDeliver(o); }}
                             className="p-1.5 rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 text-emerald-700 dark:text-emerald-400"
                             title="Livrer"
                           >
                             <PackageCheck size={16} />
                           </button>
                           <button
-                            onClick={() => handleCancel(o)}
+                            onClick={(e) => { e.stopPropagation(); handleCancel(o); }}
                             className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
                             title="Annuler"
                           >
@@ -532,10 +539,10 @@ export function CustomerOrdersPage() {
                 <div key={i} className="flex gap-2 items-center">
                   <ComboBox
                     className="flex-1"
-                    options={saleProducts.map((p) => ({
+                    options={filteredProducts.map((p) => ({
                       value: p.id,
                       label: p.name,
-                      sublabel: `${formatCurrency(p.sellPrice)} â€” Stock: ${p.quantity}`,
+                      sublabel: `${formatCurrency(p.sellPrice)}  Stock: ${p.quantity}`,
                     }))}
                     value={line.productId}
                     onChange={(val) => updateLine(i, 'productId', val)}
@@ -555,8 +562,8 @@ export function CustomerOrdersPage() {
                     type="number"
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
-                    placeholder="Prix"
-                    value={line.unitPrice}
+                    placeholder="0"
+                    value={line.unitPrice === 0 ? "" : line.unitPrice}
                     onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
                     required
                   />
@@ -701,7 +708,7 @@ export function CustomerOrdersPage() {
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <span className="text-text-muted">Client</span>
-                <p className="font-medium text-text">{customers.find((c) => c.id === detailOrder.customerId)?.name ?? 'â€”'}</p>
+                <p className="font-medium text-text">{customers.find((c) => c.id === detailOrder.customerId)?.name ?? ''}</p>
               </div>
               <div>
                 <span className="text-text-muted">Date</span>
@@ -714,7 +721,7 @@ export function CustomerOrdersPage() {
               <div>
                 <span className="text-text-muted">Paiement</span>
                 <p className="font-medium text-text">
-                  {detailOrder.effectivePaymentMethod ? paymentLabels[detailOrder.effectivePaymentMethod] : 'â€”'}
+                  {detailOrder.effectivePaymentMethod ? paymentLabels[detailOrder.effectivePaymentMethod] : ''}
                 </p>
               </div>
               <div>

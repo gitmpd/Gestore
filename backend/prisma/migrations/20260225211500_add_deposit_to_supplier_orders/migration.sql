@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "SupplierOrder" 
+ADD COLUMN "deposit" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ALTER COLUMN "paymentMethod" DROP NOT NULL;

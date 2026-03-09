@@ -4,20 +4,22 @@ Application de gestion de boutique (PWA) avec mode en ligne/hors ligne.
 
 ## Demarrage en un clic
 
-### Windows
-1. Double-cliquer sur `one-click.bat`
-2. Le script installe automatiquement les dependances si besoin
-3. Puis il lance backend + frontend
+### Multi-OS (Windows / Linux / Mac)
+Une seule commande (start/stop) avec verification prerequis, creation DB, `prisma db push`, seed, lancement backend+frontend et ouverture navigateur:
 
-### Linux / Mac
-1. Donner les droits d'execution:
 ```bash
-chmod +x one-click.sh start-all.sh install.sh
+npm run app:start
 ```
-2. Lancer:
+
+Arret:
+
 ```bash
-./one-click.sh
+npm run app:stop
 ```
+
+### Windows
+1. Double-cliquer sur `Lancer-GestionStore.bat`
+2. Pour arreter: double-cliquer sur `Arreter-GestionStore.bat`
 
 ## URLs
 
@@ -31,10 +33,9 @@ chmod +x one-click.sh start-all.sh install.sh
 
 ## Scripts utiles
 
-- `install.bat` / `install.sh`: installe frontend + backend
-- `start.bat` / `start.sh`: lance frontend seul
-- `start-all.bat` / `start-all.sh`: lance frontend + backend (avec installation auto si manquante)
-- `one-click.bat` / `one-click.sh`: installation + lancement en une seule action
+- `Lancer-GestionStore.bat` / `Arreter-GestionStore.bat`: lancement/arret Windows (double-clic)
+- `gestionstore-app.ps1 -Action start|stop`: controleur Windows
+- `npm run app:start` / `npm run app:stop`: controleur cross-platform
 
 ## Installation manuelle (optionnelle)
 
@@ -69,7 +70,7 @@ Voir `GUIDE_UTILISATEUR.md`.
 - Si la sync ne marche pas:
 1. Verifier backend sur `http://localhost:3001/api/health`
 2. Verifier l'URL serveur dans Parametres
-3. Relancer `one-click.bat` (Windows) ou `./one-click.sh` (Linux/Mac)
+3. Relancer `Lancer-GestionStore.bat` (Windows) ou `npm run app:start`
 
 - Si un port est deja pris:
 ```bash

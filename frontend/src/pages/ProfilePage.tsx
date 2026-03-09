@@ -19,6 +19,8 @@ export function ProfilePage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [name, setName] = useState(user?.name ?? '');
+  const [savingName, setSavingName] = useState(false);
 
   const handleChangePassword = async (e: FormEvent) => {
     e.preventDefault();
@@ -79,7 +81,48 @@ export function ProfilePage() {
       setLoading(false);
     }
   };
+  const handleChangeName = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
 
+    if (!name.trim()) {
+      toast.error('Le nom ne peut pas être vide');
+      return;
+    }
+
+    if (name === user.name) {
+      toast.error('Aucune modification détectée');
+      return;
+    }
+
+    setSavingName(true);
+    try {
+      await db.users.update(user.id, {
+        name: name.trim(),
+        updatedAt: nowISO(),
+        syncStatus: 'pending',
+      });
+
+      // ⚠️ Important : mettre à jour le store
+      useAuthStore.setState({
+        user: { ...user, name: name.trim() },
+      });
+
+      await logAction({
+        action: 'modification',
+        entity: 'utilisateur',
+        entityId: user.id,
+        entityName: name.trim(),
+        details: 'Modification du nom utilisateur',
+      });
+
+      toast.success('Nom modifié avec succès');
+    } catch {
+      toast.error('Erreur lors de la modification du nom');
+    } finally {
+      setSavingName(false);
+    }
+  };
   if (!user) return null;
 
   return (
@@ -107,7 +150,30 @@ export function ProfilePage() {
           </div>
         </div>
       </Card>
+      <Card>
+        <div className="flex items-center gap-2 mb-4">
+          <User size={20} className="text-primary" />
+          <h2 className="text-lg font-semibold text-text">
+            Modifier le nom
+          </h2>
+        </div>
 
+        <form onSubmit={handleChangeName} className="space-y-4">
+          <Input
+            id="name"
+            label="Nom complet"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+
+          <div className="flex justify-end">
+            <Button type="submit" disabled={savingName}>
+              {savingName ? 'Enregistrement...' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
+      </Card>
       <Card>
         <div className="flex items-center gap-2 mb-4">
           <KeyRound size={20} className="text-primary" />

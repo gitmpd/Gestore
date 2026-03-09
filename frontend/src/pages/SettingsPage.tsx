@@ -203,7 +203,7 @@ export function SettingsPage() {
       setNewUser({ name: '', email: '', password: '', role: 'vendeur' });
       setUserModalOpen(false);
       toast.success('Utilisateur créé avec succès');
-    } catch (err) {
+    } catch {
       toast.error('Erreur lors de la création du vendeur');
       setUserError('Erreur lors de la création du vendeur');
     }
@@ -332,6 +332,7 @@ export function SettingsPage() {
       entityName: user.name,
       details: 'Suppression logique (conservé pour traçabilité)',
     });
+    toast.success(`Utilisateur ${user.name} supprimé`);
   };
 
   const handleResetPassword = async (user: User) => {
@@ -428,7 +429,7 @@ export function SettingsPage() {
               <div className="bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 text-sm p-3 rounded-lg">
                 Mode local uniquement: localhost fonctionne seulement sur ce PC.
                 <br />
-                Pour un autre appareil: lancez start-all, mettez les appareils sur le meme Wi-Fi, puis ouvrez l'adresse IP de ce PC (ex: http://192.168.1.20:5173).
+                Pour un autre appareil: lancez Lancer-GestionStore.bat (ou npm run app:start), mettez les appareils sur le meme Wi-Fi, puis ouvrez l'adresse IP de ce PC (ex: http://192.168.1.20:5173).
               </div>
             )}
             <div className="border-t border-border pt-3 mt-3 space-y-3">
@@ -616,16 +617,17 @@ export function SettingsPage() {
               onClick={async () => {
                 if (!currentUser) return;
                 const okSeed = await confirmAction({
-                  title: 'Données de test',
-                  message: 'Charger les données de test ? Les données existantes seront conservées.',
-                  confirmLabel: 'Charger',
+                  title: 'Catalogue de test',
+                  message:
+                    'Cette action va épurer les données locales et charger uniquement des catégories et produits propres. Continuer ?',
+                  confirmLabel: 'Épurer et charger',
                   variant: 'warning',
                 });
                 if (!okSeed) return;
                 setSeeding(true);
                 try {
                   await seedTestData(currentUser.id);
-                  toast.success('Données de test chargées avec succès !');
+                  toast.success('Catalogue de test chargé : catégories et produits uniquement.');
                 } catch (err) {
                   toast.error('Erreur : ' + (err as Error).message);
                 } finally {
@@ -634,7 +636,7 @@ export function SettingsPage() {
               }}
             >
               <Database size={16} />
-              {seeding ? 'Chargement...' : 'Charger les données de test'}
+              {seeding ? 'Chargement...' : 'Charger le catalogue de test'}
             </Button>
             <Button
               variant="danger"

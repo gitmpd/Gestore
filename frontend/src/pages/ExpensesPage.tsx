@@ -165,7 +165,7 @@ export function ExpensesPage() {
       await db.expenses.update(editing.id, {
         category: form.category,
         amount: Number(form.amount),
-        description: form.description,
+        description: form.description ?? '',
         date: dateValue,
         recurring: form.recurring ?? false,
         updatedAt: now,
@@ -184,7 +184,7 @@ export function ExpensesPage() {
         id,
         category: form.category as ExpenseCategory,
         amount: Number(form.amount),
-        description: form.description!,
+        description: form.description ?? '',
         date: dateValue,
         recurring: form.recurring ?? false,
         userId: currentUser?.id,
@@ -212,16 +212,26 @@ export function ExpensesPage() {
       variant: 'danger',
     });
     if (!ok) return;
-    const now = nowISO();
-    await db.expenses.update(expense.id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-    await trackDeletion('expenses', expense.id);
-    await logAction({
-      action: 'suppression',
-      entity: 'depense',
-      entityId: expense.id,
-      entityName: expenseCategoryLabels[expense.category],
-      details: formatCurrency(expense.amount),
-    });
+  
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
+      const now = nowISO();
+      await db.expenses.update(expense.id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
+      await trackDeletion('expenses', expense.id);
+      await logAction({
+        action: 'suppression',
+        entity: 'depense',
+        entityId: expense.id,
+        entityName: expenseCategoryLabels[expense.category],
+        details: formatCurrency(expense.amount),
+      });
+  
+      toast.dismiss(loadingToast);
+      toast.success(`Dépense supprimée`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
+    }
   };
 
   const periodLabels: Record<FilterPeriod, string> = {
@@ -395,7 +405,7 @@ export function ExpensesPage() {
                       {expenseCategoryLabels[exp.category]}
                     </span>
                   </Td>
-                  <Td className="max-w-[200px] truncate">{exp.description}</Td>
+                  <Td className="max-w-[200px] truncate">{exp.description && exp.description.trim() ? exp.description : '—'}</Td>
                   <Td className="font-semibold text-red-600">{formatCurrency(exp.amount)}</Td>
                   {isGerant && (
                     <Td className="text-sm">{exp.userId ? userMap.get(exp.userId) ?? '—' : '—'}</Td>
@@ -460,7 +470,6 @@ export function ExpensesPage() {
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             placeholder="Ex: Loyer boutique mois de février..."
-            required
           />
           <Input
             id="expDate"

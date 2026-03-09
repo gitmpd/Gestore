@@ -10,7 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
+import { generateId, generateReference, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
@@ -131,6 +131,16 @@ export function SalesPage() {
     );
   };
 
+  const updateCartUnitPrice = (productId: string, unitPrice: number) => {
+    setCart(
+      cart.map((c) =>
+        c.productId === productId
+          ? { ...c, unitPrice: Math.max(0, unitPrice) }
+          : c
+      )
+    );
+  };
+
   const removeFromCart = (productId: string) => {
     setCart(cart.filter((c) => c.productId !== productId));
   };
@@ -141,7 +151,7 @@ export function SalesPage() {
 
     try {
       const now = nowISO();
-      const saleId = generateId();
+      const saleId = generateReference();
 
       await db.sales.add({
         id: saleId,
@@ -185,7 +195,7 @@ export function SalesPage() {
             type: 'sortie',
             quantity: item.quantity,
             date: now,
-            reason: `Vente #${saleId.slice(0, 8)}`,
+            reason: `Vente #${saleId}`,
             userId: user.id,
             createdAt: now,
             updatedAt: now,
@@ -210,7 +220,7 @@ export function SalesPage() {
             amount: total,
             type: 'credit',
             date: now,
-            note: `Vente #${saleId.slice(0, 8)}`,
+            note: `Vente #${saleId}`,
             createdAt: now,
             updatedAt: now,
             syncStatus: 'pending',
@@ -246,30 +256,39 @@ export function SalesPage() {
   const handleDeleteSale = async (sale: Sale) => {
     const ok = await confirmAction({
       title: 'Supprimer la vente',
-      message: `Voulez-vous vraiment supprimer la vente #${sale.id.slice(0, 8)} de ${formatCurrency(sale.total)} ?`,
+      message: `Voulez-vous vraiment supprimer la vente #${sale.id} de ${formatCurrency(sale.total)} ?`,
       confirmLabel: 'Supprimer',
       variant: 'danger',
     });
     if (!ok) return;
-
-    const now = nowISO();
-    await db.sales.update(sale.id, {
-      deleted: true,
-      status: 'cancelled',
-      updatedAt: now,
-      syncStatus: 'pending',
-    });
-
-    const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
-    const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
-
-    await logAction({
-      action: 'suppression',
-      entity: 'vente',
-      entityId: sale.id,
-      entityName: `#${sale.id.slice(0, 8)}`,
-      details: `${formatCurrency(sale.total)} — ${paymentLabels[sale.paymentMethod]} — ${itemsSummary}`,
-    });
+  
+    const loadingToast = toast.loading('Suppression en cours...');
+    try {
+      const now = nowISO();
+      await db.sales.update(sale.id, {
+        deleted: true,
+        status: 'cancelled',
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+  
+      const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
+      const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
+  
+      await logAction({
+        action: 'suppression',
+        entity: 'vente',
+        entityId: sale.id,
+        entityName: `#${sale.id}`,
+        details: `${formatCurrency(sale.total)} — ${paymentLabels[sale.paymentMethod]} — ${itemsSummary}`,
+      });
+  
+      toast.dismiss(loadingToast);
+      toast.success(`Vente #${sale.id} supprimée`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.error('Erreur lors de la suppression');
+    }
   };
 
   return (
@@ -287,7 +306,7 @@ export function SalesPage() {
             size="sm"
             onClick={() => {
               const rows = filteredSales.map((s) => [
-                s.id.slice(0, 8),
+                s.id,
                 new Date(s.date).toLocaleDateString('fr-FR'),
                 formatCurrency(s.total),
                 s.paymentMethod,
@@ -431,7 +450,7 @@ export function SalesPage() {
                       />
                     </Td>
                   )}
-                  <Td className="font-mono text-sm">#{s.id.slice(0, 8)}</Td>
+                  <Td className="font-mono text-sm">#{s.id}</Td>
                   <Td className="text-text-muted">{formatDateTime(s.date)}</Td>
                   {isGerant && (
                     <Td className="text-sm">{userMap.get(s.userId) ?? '—'}</Td>
@@ -552,7 +571,9 @@ export function SalesPage() {
                           className="w-16 text-center rounded border border-border bg-surface text-text px-1 py-0.5"
                         />
                       </td>
-                      <td className="px-3 py-2 text-right">{formatCurrency(item.unitPrice)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <input type="number" min={0} step="0.01" value={item.unitPrice} onChange={(e) => updateCartUnitPrice(item.productId, Number(e.target.value) || 0) } className="w-24 text-right rounded border border-border bg-surface text-text px-1 py-0.5"/>
+                      </td>
                       <td className="px-3 py-2 text-right font-medium">
                         {formatCurrency(item.quantity * item.unitPrice)}
                       </td>
@@ -626,7 +647,7 @@ export function SalesPage() {
       <Modal
         open={detailModalOpen}
         onClose={() => setDetailModalOpen(false)}
-        title={`Vente #${selectedSale?.id.slice(0, 8) ?? ''}`}
+        title={`Vente #${selectedSale?.id ?? ''}`}
         className="max-w-lg"
       >
         {selectedSale && (
@@ -719,4 +740,3 @@ export function SalesPage() {
     </div>
   );
 }
-

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+﻿import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import bcrypt from 'bcryptjs';
 import { useAuthStore } from '@/stores/authStore';
@@ -22,75 +22,75 @@ export function ChangePasswordPage() {
   const navigate = useNavigate();
 
   const handleSubmit = async (e: FormEvent) => {
-  e.preventDefault();
-  setError('');
+    e.preventDefault();
+    setError('');
 
-  if (newPassword.length < 6) {
-    setError('Le mot de passe doit contenir au moins 6 caractères');
-    return;
-  }
-
-  if (newPassword !== confirmPassword) {
-    setError('Les mots de passe ne correspondent pas');
-    return;
-  }
-
-  setLoading(true);
-  const trimmedName = displayName.trim();
-
-  try {
-    // Préparer le corps de la requête
-    const body: Record<string, any> = { newPassword };
-    if (trimmedName) body.name = trimmedName;
-
-    // Si token existant → envoi normal
-    if (token) {
-      const res = await fetch(`${getServerUrl()}/api/auth/change-password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (res.ok) {
-        const updatedUser = await res.json();
-        loginFn(
-          { ...user, ...updatedUser, mustChangePassword: false },
-          token,
-          useAuthStore.getState().refreshToken || 'offline-refresh'
-        );
-        clearMustChangePassword();
-        await logAction({
-          action: 'modification',
-          entity: 'utilisateur',
-          entityName: trimmedName || user?.name,
-          details: 'Mot de passe modifié',
-        });
-        navigate('/');
-        return;
-      }
-
-      const data = await res.json();
-      setError(data.error || 'Erreur lors du changement de mot de passe');
+    if (newPassword.length < 6) {
+      setError('Le mot de passe doit contenir au moins 6 caracteres');
       return;
     }
 
-    // Si pas de token → première connexion, envoi de l'email
-    if (!token && user?.email) {
-      body.email = user.email;
-      const res = await fetch(`${getServerUrl()}/api/auth/change-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+    if (newPassword !== confirmPassword) {
+      setError('Les mots de passe ne correspondent pas');
+      return;
+    }
 
-      if (res.ok) {
-        const updatedUser = await res.json();
-        // On génère un token "offline" temporaire pour le store
+    setLoading(true);
+    const trimmedName = displayName.trim();
+
+    try {
+      const body: Record<string, unknown> = { newPassword };
+      if (trimmedName) body.name = trimmedName;
+
+      if (token) {
+        const res = await fetch(`${getServerUrl()}/api/auth/change-password`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (res.ok) {
+          const updatedUser = await res.json();
+          loginFn(
+            { ...user, ...updatedUser, mustChangePassword: false },
+            token,
+            useAuthStore.getState().refreshToken || 'offline-refresh'
+          );
+          clearMustChangePassword();
+          await logAction({
+            action: 'modification',
+            entity: 'utilisateur',
+            entityName: trimmedName || user?.name,
+            details: 'Mot de passe modifie',
+          });
+          navigate('/');
+          return;
+        }
+
+        const data = await res.json();
+        setError(data.error || 'Erreur lors du changement de mot de passe');
+        return;
+      }
+
+      // Sans token serveur, on bascule uniquement en mise a jour locale (hors-ligne).
+      throw new Error('AUTH_TOKEN_REQUIRED');
+    } catch {
+      if (user) {
+        const updates: Record<string, unknown> = {
+          password: await bcrypt.hash(newPassword, 10),
+          mustChangePassword: false,
+          updatedAt: nowISO(),
+          syncStatus: 'pending',
+        };
+        if (trimmedName) updates.name = trimmedName;
+
+        await db.users.update(user.id, updates);
+
         loginFn(
-          { ...user, ...updatedUser, mustChangePassword: false },
+          { ...user, name: trimmedName || user.name, mustChangePassword: false },
           'offline-token',
           'offline-refresh'
         );
@@ -98,48 +98,15 @@ export function ChangePasswordPage() {
         await logAction({
           action: 'modification',
           entity: 'utilisateur',
-          entityName: trimmedName || user?.name,
-          details: 'Première connexion — mot de passe changé',
+          entityName: trimmedName || user.name,
+          details: 'Premiere connexion (hors-ligne)',
         });
         navigate('/');
-        return;
       }
-
-      const data = await res.json();
-      setError(data.error || 'Erreur lors du changement de mot de passe');
-      return;
+    } finally {
+      setLoading(false);
     }
-  } catch {
-    // Mode hors-ligne → mise à jour locale
-    if (user) {
-      const updates: Record<string, unknown> = {
-        password: await bcrypt.hash(newPassword, 10),
-        mustChangePassword: false,
-        updatedAt: nowISO(),
-        syncStatus: 'pending',
-      };
-      if (trimmedName) updates.name = trimmedName;
-
-      await db.users.update(user.id, updates);
-
-      loginFn(
-        { ...user, name: trimmedName || user.name, mustChangePassword: false },
-        'offline-token',
-        'offline-refresh'
-      );
-      clearMustChangePassword();
-      await logAction({
-        action: 'modification',
-        entity: 'utilisateur',
-        entityName: trimmedName || user.name,
-        details: 'Première connexion (hors-ligne)',
-      });
-      navigate('/');
-    }
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-dark to-primary p-4">
@@ -148,7 +115,7 @@ export function ChangePasswordPage() {
           <h1 className="text-3xl font-bold text-primary-dark">GestionStore</h1>
           <p className="text-text-muted mt-2">Configurez votre compte</p>
           <p className="text-sm text-text-muted mt-1">
-            Définissez votre nom d'affichage et un nouveau mot de passe.
+            Definissez votre nom d'affichage et un nouveau mot de passe.
           </p>
         </div>
 
@@ -164,7 +131,7 @@ export function ChangePasswordPage() {
             id="newPassword"
             label="Nouveau mot de passe"
             type="password"
-            placeholder="Minimum 6 caractères"
+            placeholder="Minimum 6 caracteres"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             required
@@ -189,10 +156,9 @@ export function ChangePasswordPage() {
         </form>
 
         <p className="text-xs text-text-muted text-center mt-6">
-          Vous ne pourrez pas accéder à l'application sans changer votre mot de passe.
+          Vous ne pourrez pas acceder a l'application sans changer votre mot de passe.
         </p>
       </div>
     </div>
   );
 }
-
