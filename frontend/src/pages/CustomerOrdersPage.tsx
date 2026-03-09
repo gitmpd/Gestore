@@ -428,6 +428,7 @@ export function CustomerOrdersPage() {
               <Th>Acompte</Th>
               <Th>Paiement</Th>
               <Th>Statut</Th>
+              <Th>Actions</Th>
               <Th />
             </Tr>
           </Thead>
@@ -440,7 +441,7 @@ export function CustomerOrdersPage() {
               </Tr>
             ) : (
               filteredOrders.map((o) => (
-                <Tr key={o.id}>
+                <Tr key={o.id} onClick={() => openDetail(o)} className="cursor-pointer hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
                   <Td className="font-mono text-xs">#{o.id}</Td>
                   <Td className="font-medium">{o.customerName}</Td>
                   {isGerant && (
@@ -461,7 +462,7 @@ export function CustomerOrdersPage() {
                         {paymentLabels[o.effectivePaymentMethod]}
                       </Badge>
                     ) : (
-                      <span className="text-text-muted">En attente</span>
+                      <span className="text-text-muted">—</span>
                     )}
                   </Td>
                   <Td>
@@ -470,7 +471,7 @@ export function CustomerOrdersPage() {
                   <Td>
                     <div className="flex gap-1">
                       <button
-                        onClick={() => openDetail(o)}
+                        onClick={(e) => { e.stopPropagation(); openDetail(o); }}
                         className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
                         title="Détails"
                       >
@@ -479,14 +480,14 @@ export function CustomerOrdersPage() {
                       {o.status === 'en_attente' && (
                         <>
                           <button
-                            onClick={() => openDeliver(o)}
+                            onClick={(e) => { e.stopPropagation(); openDeliver(o); }}
                             className="p-1.5 rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 text-emerald-700 dark:text-emerald-400"
                             title="Livrer"
                           >
                             <PackageCheck size={16} />
                           </button>
                           <button
-                            onClick={() => handleCancel(o)}
+                            onClick={(e) => { e.stopPropagation(); handleCancel(o); }}
                             className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
                             title="Annuler"
                           >
@@ -561,8 +562,8 @@ export function CustomerOrdersPage() {
                     type="number"
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
-                    placeholder="Prix"
-                    value={line.unitPrice}
+                    placeholder="0"
+                    value={line.unitPrice === 0 ? "" : line.unitPrice}
                     onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
                     required
                   />

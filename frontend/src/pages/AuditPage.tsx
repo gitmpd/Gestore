@@ -183,11 +183,11 @@ export function AuditPage() {
     }
 
     if (log.action === 'creation') {
-      return `Le ${date}, ${log.userName} a crée ${item}.`;
+      return `Le ${date}, ${log.userName} a crée un(e) ${log.entity} ${item}.`;
     }
 
     if (log.action === 'suppression') {
-      return `Le ${date}, ${log.userName} a supprimé ${item}.`;
+      return `Le ${date}, ${log.userName} a supprimé un(e) ${log.entity} ${details ? ` (${details})` : ` (${item})`}.`;
     }
 
     if (log.action === 'vente') {

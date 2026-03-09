@@ -40,20 +40,21 @@ export function CustomersPage() {
     return all
       .filter(
         (c) =>
-          !search ||
-          c.name.toLowerCase().includes(search.toLowerCase()) ||
-          c.phone.includes(search)
+          !c.deleted &&
+          (!search ||
+            c.name.toLowerCase().includes(search.toLowerCase()) ||
+            c.phone.includes(search))
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [search]) ?? [];
 
   const customerTransactions = useLiveQuery(async () => {
     if (!selectedCustomer) return [];
-    return db.creditTransactions
+    return (await db.creditTransactions
       .where('customerId')
       .equals(selectedCustomer.id)
       .reverse()
-      .sortBy('date');
+      .sortBy('date')).filter((t) => !t.deleted);
   }, [selectedCustomer]) ?? [];
 
   const openAdd = () => {
@@ -338,7 +339,7 @@ export function CustomersPage() {
             label="Montant"
             type="number"
             min={0}
-            value={creditAmount}
+            value={creditAmount === 0 ? "" : creditAmount}
             onChange={(e) => setCreditAmount(Number(e.target.value))}
             placeholder="Ex : 5000"
             required

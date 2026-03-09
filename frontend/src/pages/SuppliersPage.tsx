@@ -65,9 +65,10 @@ export function SuppliersPage() {
     return all
       .filter(
         (s) =>
-          !search ||
-          s.name.toLowerCase().includes(search.toLowerCase()) ||
-          s.phone.includes(search)
+          !s.deleted &&
+          (!search ||
+            s.name.toLowerCase().includes(search.toLowerCase()) ||
+            s.phone.includes(search))
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [search]) ?? [];
@@ -88,11 +89,11 @@ export function SuppliersPage() {
 
   const supplierTransactions = useLiveQuery(async () => {
     if (!selectedSupplier) return [];
-    return db.supplierCreditTransactions
+    return (await db.supplierCreditTransactions
       .where('supplierId')
       .equals(selectedSupplier.id)
       .reverse()
-      .sortBy('date');
+      .sortBy('date')).filter((t) => !t.deleted);
   }, [selectedSupplier]) ?? [];
 
   const openAdd = () => {
@@ -799,7 +800,7 @@ export function SuppliersPage() {
             label="Montant"
             type="number"
             min={0}
-            value={creditAmount}
+            value={creditAmount === 0 ? "" : creditAmount}
             onChange={(e) => setCreditAmount(Number(e.target.value))}
             placeholder="Ex : 5000"
             required
