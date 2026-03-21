@@ -65,6 +65,19 @@ export function SalesPage() {
     return all.filter((s) => !s.deleted);
   }) ?? [];
 
+  const saleItemsMap = useLiveQuery(async () => {
+  const items = await db.saleItems.toArray();
+  const map = new Map<string, SaleItemType[]>();
+
+  items.forEach((item) => {
+    if (!map.has(item.saleId)) {
+      map.set(item.saleId, []);
+    }
+    map.get(item.saleId)!.push(item);
+  });
+
+  return map;
+}, []) ?? new Map();
   const filteredSales = useMemo(() => {
     return recentSales.filter((s) => {
       if (paymentFilter !== 'all' && s.paymentMethod !== paymentFilter) return false;
@@ -419,6 +432,7 @@ export function SalesPage() {
                 </Th>
               )}
               <Th>Réf.</Th>
+              <Th>Produits</Th>
               <Th>Date</Th>
               {isGerant && <Th>Vendeur</Th>}
               <Th>Client</Th>
@@ -451,6 +465,19 @@ export function SalesPage() {
                     </Td>
                   )}
                   <Td className="font-mono text-sm">#{s.id}</Td>
+
+                 <Td className="text-sm">
+                  {(() => {
+                    const items = saleItemsMap.get(s.id) ?? [];
+                    const itemsText = items
+                      .map((i: SaleItemType) => `${i.productName} x${i.quantity}`)
+                      .slice(0, 2)
+                      .join(', ');
+
+                    return itemsText + (items.length > 2 ? '...' : '');
+                  })()}
+                </Td>
+
                   <Td className="text-text-muted">{formatDateTime(s.date)}</Td>
                   {isGerant && (
                     <Td className="text-sm">{userMap.get(s.userId) ?? '—'}</Td>
