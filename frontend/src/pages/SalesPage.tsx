@@ -15,7 +15,6 @@ import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
-import { trackDeletion } from '@/services/syncService';
 import { confirmAction } from '@/stores/confirmStore';
 
 interface CartItem {
@@ -38,6 +37,7 @@ export function SalesPage() {
   const isGerant = user?.role === 'gerant';
   const [modalOpen, setModalOpen] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [customerId, setCustomerId] = useState('');
   const [productSearch, setProductSearch] = useState('');
@@ -46,6 +46,9 @@ export function SalesPage() {
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [selectedItems, setSelectedItems] = useState<SaleItemType[]>([]);
   const [selectedSaleIds, setSelectedSaleIds] = useState<string[]>([]);
+  const [salesToCancel, setSalesToCancel] = useState<Sale[]>([]);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelAmount, setCancelAmount] = useState(0);
 
   const [saleSearch, setSaleSearch] = useState('');
   const [paymentFilter, setPaymentFilter] = useState<PaymentMethod | 'all'>('all');
@@ -57,8 +60,25 @@ export function SalesPage() {
   const saleProducts = allProducts.filter((p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente');
   const customers = useLiveQuery(() => db.customers.orderBy('name').toArray()) ?? [];
   const users = useLiveQuery(() => db.users.toArray()) ?? [];
+  const saleAuditMap = useLiveQuery(async () => {
+    const logs = await db.auditLogs.where('entity').equals('vente').toArray();
+    const map = new Map<string, string>();
+    logs.forEach((log) => {
+      if (log.action === 'vente' && log.entityId && !map.has(log.entityId)) {
+        map.set(log.entityId, log.userName);
+      }
+    });
+    return map;
+  }) ?? new Map<string, string>();
   const userMap = new Map(users.map((u) => [u.id, u.name]));
   const customerMap = new Map(customers.map((c) => [c.id, c.name]));
+  const getSellerName = (sale: Sale) => {
+    if (sale.userName?.trim()) return sale.userName;
+    if (userMap.has(sale.userId)) return userMap.get(sale.userId) ?? '-';
+    if (saleAuditMap.has(sale.id)) return saleAuditMap.get(sale.id) ?? '-';
+    if (user?.id === sale.userId) return user.name;
+    return '-';
+  };
 
   const recentSales = useLiveQuery(async () => {
     const all = await db.sales.orderBy('date').reverse().limit(200).toArray();
@@ -87,16 +107,20 @@ export function SalesPage() {
       if (saleSearch) {
         const q = saleSearch.toLowerCase();
         const clientName = s.customerId ? customerMap.get(s.customerId)?.toLowerCase() ?? '' : '';
-        const sellerName = userMap.get(s.userId)?.toLowerCase() ?? '';
+        const sellerName = getSellerName(s).toLowerCase();
+        const productText = (saleItemsMap.get(s.id) ?? [])
+          .map((item) => item.productName.toLowerCase())
+          .join(' ');
         return (
           s.id.toLowerCase().includes(q) ||
           clientName.includes(q) ||
-          sellerName.includes(q)
+          sellerName.includes(q) ||
+          productText.includes(q)
         );
       }
       return true;
     });
-  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, dateFrom, dateTo]);
+  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, saleItemsMap, dateFrom, dateTo]);
 
   const filteredProducts = saleProducts.filter(
     (p) =>
@@ -189,6 +213,7 @@ export function SalesPage() {
           await db.sales.add({
             id: saleId,
             userId: user.id,
+            userName: user.name,
             customerId: customerId || undefined,
             date: now,
             total,
@@ -287,41 +312,134 @@ export function SalesPage() {
     setDetailModalOpen(true);
   };
 
-  const handleDeleteSale = async (sale: Sale) => {
+  const handleDeleteSale = (sale: Sale) => {
+    openCancelSalesModal([sale]);
+  };
+
+  const openCancelSalesModal = (sales: Sale[]) => {
+    const filtered = sales.filter((sale) => sale.status !== 'cancelled');
+    setSalesToCancel(filtered);
+    setCancelReason('');
+    setCancelAmount(filtered.length === 1 ? filtered[0].total : filtered.reduce((sum, sale) => sum + sale.total, 0));
+    setCancelModalOpen(true);
+  };
+
+  const cancelSales = async (sales: Sale[], reason: string, amountOverride?: number) => {
+    if (!user || sales.length === 0) return;
+
+    const now = nowISO();
+    const normalizedReason = reason.trim();
+
+    await db.transaction(
+      'rw',
+      [db.sales, db.saleItems, db.products, db.stockMovements, db.customers, db.creditTransactions],
+      async () => {
+        for (const sale of sales) {
+          const effectiveAmount = sales.length === 1 && typeof amountOverride === 'number' ? Math.max(0, amountOverride) : sale.total;
+          const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
+
+          for (const item of items) {
+            const product = await db.products.get(item.productId);
+            if (!product || product.deleted) continue;
+
+            await db.products.update(item.productId, {
+              quantity: product.quantity + item.quantity,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+
+            await db.stockMovements.add({
+              id: generateId(),
+              productId: item.productId,
+              productName: item.productName,
+              type: 'retour',
+              quantity: item.quantity,
+              date: now,
+              reason: normalizedReason ? `Annulation vente #${sale.id} - ${normalizedReason}` : `Annulation vente #${sale.id}`,
+              userId: user.id,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+          }
+
+          if (sale.paymentMethod === 'credit' && sale.customerId) {
+            const customer = await db.customers.get(sale.customerId);
+            const creditTxs = (await db.creditTransactions.where('saleId').equals(sale.id).toArray()).filter(
+              (tx) => !tx.deleted && tx.type === 'credit'
+            );
+
+            for (const tx of creditTxs) {
+              await db.creditTransactions.update(tx.id, {
+                deleted: true,
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+            }
+
+            if (customer) {
+              await db.customers.update(sale.customerId, {
+                creditBalance: Math.max(0, customer.creditBalance - effectiveAmount),
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+            }
+          }
+
+          await db.sales.update(sale.id, {
+            total: effectiveAmount,
+            status: 'cancelled',
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+
+          const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
+          await logAction({
+            action: 'suppression',
+            entity: 'vente',
+            entityId: sale.id,
+            entityName: `#${sale.id}`,
+            details: `${formatCurrency(effectiveAmount)} - ${paymentLabels[sale.paymentMethod]} - ${itemsSummary}${normalizedReason ? ` - Motif: ${normalizedReason}` : ''}`,
+          });
+        }
+      }
+    );
+  };
+
+  const handleConfirmCancelSales = async () => {
+    if (salesToCancel.length === 0) {
+      setCancelModalOpen(false);
+      return;
+    }
+    if (salesToCancel.length === 1 && cancelAmount < 0) {
+      toast.error("Le montant d'annulation ne peut pas etre negatif");
+      return;
+    }
+
     const ok = await confirmAction({
-      title: 'Supprimer la vente',
-      message: `Voulez-vous vraiment supprimer la vente #${sale.id} de ${formatCurrency(sale.total)} ?`,
-      confirmLabel: 'Supprimer',
+      title: salesToCancel.length === 1 ? 'Annuler la vente' : 'Annuler les ventes',
+      message:
+        salesToCancel.length === 1
+          ? `Voulez-vous vraiment annuler la vente #${salesToCancel[0].id} ? Le stock sera remis en place.`
+          : `Voulez-vous vraiment annuler ${salesToCancel.length} vente(s) ? Le stock sera remis en place.`,
+      confirmLabel: 'Confirmer',
       variant: 'danger',
     });
     if (!ok) return;
-  
-    const loadingToast = toast.loading('Suppression en cours...');
+
+    const loadingToast = toast.loading('Annulation en cours...');
     try {
-      const now = nowISO();
-      await db.sales.update(sale.id, {
-        deleted: true,
-        status: 'cancelled',
-        updatedAt: now,
-        syncStatus: 'pending',
-      });
-  
-      const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
-      const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
-  
-      await logAction({
-        action: 'suppression',
-        entity: 'vente',
-        entityId: sale.id,
-        entityName: `#${sale.id}`,
-        details: `${formatCurrency(sale.total)} — ${paymentLabels[sale.paymentMethod]} — ${itemsSummary}`,
-      });
-  
+      await cancelSales(salesToCancel, cancelReason, cancelAmount);
+      setCancelModalOpen(false);
+      setCancelReason('');
+      setCancelAmount(0);
+      setSalesToCancel([]);
+      setSelectedSaleIds([]);
       toast.dismiss(loadingToast);
-      toast.success(`Vente #${sale.id} supprimée`);
+      toast.success(salesToCancel.length === 1 ? 'Vente annulée' : 'Ventes annulées');
     } catch (error) {
       toast.dismiss(loadingToast);
-      toast.error('Erreur lors de la suppression');
+      toast.error('Erreur lors de l\'annulation : ' + (error as Error).message);
     }
   };
 
@@ -356,36 +474,12 @@ export function SalesPage() {
           <Button onClick={() => setModalOpen(true)}>
             <ShoppingBag size={18} /> Nouvelle vente
           </Button>
-          {isGerant && selectedSaleIds.length > 0 && (
+          {selectedSaleIds.length > 0 && (
             <Button
               variant="danger"
-              onClick={async () => {
-                const ok = await confirmAction({
-                  title: 'Supprimer les ventes sélectionnées',
-                  message: `Voulez-vous annuler et supprimer ${selectedSaleIds.length} vente(s) sélectionnée(s) ? Cette action est logique (marque 'deleted').`,
-                  confirmLabel: 'Supprimer',
-                  variant: 'danger',
-                });
-                if (!ok) return;
-                const now = nowISO();
-                const ids: string[] = [];
-                for (const id of selectedSaleIds) {
-                  const s = await db.sales.get(id);
-                  if (!s) continue;
-                  ids.push(id);
-                  await db.sales.update(id, { deleted: true, status: 'cancelled', updatedAt: now, syncStatus: 'pending' });
-                  const itemIds = await db.saleItems.where('saleId').equals(id).primaryKeys();
-                  for (const itemId of itemIds) {
-                    await trackDeletion('saleItems', itemId as string);
-                  }
-                  await trackDeletion('sales', id);
-                }
-                await logAction({ action: 'suppression', entity: 'vente', details: `Suppression multiple: ${ids.join(', ')}` });
-                setSelectedSaleIds([]);
-                toast.success('Ventes supprimées');
-              }}
+              onClick={() => openCancelSalesModal(filteredSales.filter((s) => selectedSaleIds.includes(s.id)))}
             >
-              <Trash2 size={16} /> Supprimer
+              <Trash2 size={16} /> Annuler
             </Button>
           )}
         </div>
@@ -440,19 +534,16 @@ export function SalesPage() {
         <Table>
           <Thead>
             <Tr>
-              {isGerant && (
-                <Th>
-                  <input
-                    type="checkbox"
-                    checked={filteredSales.length > 0 && selectedSaleIds.length === filteredSales.length}
-                    onChange={(e) => {
-                      if (e.target.checked) setSelectedSaleIds(filteredSales.map((s) => s.id));
-                      else setSelectedSaleIds([]);
-                    }}
-                  />
-                </Th>
-              )}
-              <Th>Réf.</Th>
+              <Th>
+                <input
+                  type="checkbox"
+                  checked={filteredSales.length > 0 && selectedSaleIds.length === filteredSales.length}
+                  onChange={(e) => {
+                    if (e.target.checked) setSelectedSaleIds(filteredSales.map((s) => s.id));
+                    else setSelectedSaleIds([]);
+                  }}
+                />
+              </Th>
               <Th>Produits</Th>
               <Th>Date</Th>
               {isGerant && <Th>Vendeur</Th>}
@@ -466,42 +557,47 @@ export function SalesPage() {
           <Tbody>
             {filteredSales.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 9 : 7} className="text-center text-text-muted py-8">
+                <Td colSpan={isGerant ? 8 : 7} className="text-center text-text-muted py-8">
                   {recentSales.length === 0 ? 'Aucune vente enregistrée' : 'Aucune vente ne correspond aux filtres'}
                 </Td>
               </Tr>
             ) : (
               filteredSales.map((s) => (
                 <Tr key={s.id}>
-                  {isGerant && (
-                    <Td>
-                      <input
-                        type="checkbox"
-                        checked={selectedSaleIds.includes(s.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) setSelectedSaleIds((r) => [...r, s.id]);
-                          else setSelectedSaleIds((r) => r.filter((id) => id !== s.id));
-                        }}
-                      />
-                    </Td>
-                  )}
-                  <Td className="font-mono text-sm">#{s.id}</Td>
-
-                 <Td className="text-sm">
-                  {(() => {
-                    const items = saleItemsMap.get(s.id) ?? [];
-                    const itemsText = items
-                      .map((i: SaleItemType) => `${i.productName} x${i.quantity}`)
-                      .slice(0, 2)
-                      .join(', ');
-
-                    return itemsText + (items.length > 2 ? '...' : '');
-                  })()}
-                </Td>
+                  <Td>
+                    <input
+                      type="checkbox"
+                      checked={selectedSaleIds.includes(s.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedSaleIds((r) => [...r, s.id]);
+                        else setSelectedSaleIds((r) => r.filter((id) => id !== s.id));
+                      }}
+                    />
+                  </Td>
+                  <Td className="text-sm">
+                    <div className="space-y-1">
+                      {(() => {
+                        const items = saleItemsMap.get(s.id) ?? [];
+                        if (items.length === 0) {
+                          return <span className="text-text-muted">-</span>;
+                        }
+                        return items.slice(0, 3).map((i: SaleItemType) => (
+                          <div key={i.id} className="leading-tight">
+                            <span className="font-medium">{i.productName}</span>
+                            <span className="text-text-muted"> x{i.quantity}</span>
+                          </div>
+                        ));
+                      })()}
+                      {(() => {
+                        const items = saleItemsMap.get(s.id) ?? [];
+                        return items.length > 3 ? <div className="text-xs text-text-muted">+{items.length - 3} autre(s)</div> : null;
+                      })()}
+                    </div>
+                  </Td>
 
                   <Td className="text-text-muted">{formatDateTime(s.date)}</Td>
                   {isGerant && (
-                    <Td className="text-sm">{userMap.get(s.userId) ?? '—'}</Td>
+                    <Td className="text-sm">{getSellerName(s)}</Td>
                   )}
                   <Td>{s.customerId ? customerMap.get(s.customerId) ?? '—' : '—'}</Td>
                   <Td className="font-semibold">{formatCurrency(s.total)}</Td>
@@ -524,7 +620,7 @@ export function SalesPage() {
                       >
                         <Eye size={16} />
                       </button>
-                      {isGerant && s.status === 'completed' && (
+                      {s.status === 'completed' && (
                         <button
                           onClick={() => handleDeleteSale(s)}
                           className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30 text-danger"
@@ -724,7 +820,7 @@ export function SalesPage() {
               {isGerant && (
                 <div>
                   <p className="text-text-muted">Vendeur</p>
-                  <p className="font-medium text-text">{userMap.get(selectedSale.userId) ?? '—'}</p>
+                  <p className="font-medium text-text">{getSellerName(selectedSale)}</p>
                 </div>
               )}
             </div>
@@ -784,6 +880,92 @@ export function SalesPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        title={salesToCancel.length > 1 ? 'Annuler les ventes' : `Annuler la vente #${salesToCancel[0]?.id ?? ''}`}
+        className="max-w-lg"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            L'annulation remettra le stock en place et corrigera le crédit client si la vente était à crédit.
+          </p>
+
+          <div className="rounded-lg border border-border bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-text">
+            <p className="font-medium mb-1">Produits concernes</p>
+            <div className="space-y-1 text-text-muted">
+              {salesToCancel.length === 0 ? (
+                <p>-</p>
+              ) : salesToCancel.length === 1 ? (
+                (saleItemsMap.get(salesToCancel[0].id) ?? []).length > 0 ? (
+                  (saleItemsMap.get(salesToCancel[0].id) ?? []).map((item) => (
+                    <p key={item.id}>
+                      {item.productName} x{item.quantity}
+                    </p>
+                  ))
+                ) : (
+                  <p>-</p>
+                )
+              ) : (
+                salesToCancel.map((sale) => {
+                  const items = saleItemsMap.get(sale.id) ?? [];
+                  const names = items.map((item) => item.productName).slice(0, 2).join(', ');
+                  return (
+                    <p key={sale.id}>
+                      #{sale.id}: {names || '-'}{items.length > 2 ? '...' : ''}
+                    </p>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="cancelAmount" className="text-sm font-medium text-text">
+              Montant a annuler
+            </label>
+            <input
+              id="cancelAmount"
+              type="number"
+              min={0}
+              step="0.01"
+              value={cancelAmount}
+              onChange={(e) => setCancelAmount(Number(e.target.value) || 0)}
+              disabled={salesToCancel.length > 1}
+              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
+            />
+            {salesToCancel.length > 1 && (
+              <p className="text-xs text-text-muted">
+                La modification du montant est disponible pour une annulation unitaire.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="cancelReason" className="text-sm font-medium text-text">
+              Motif d'annulation (optionnel)
+            </label>
+            <textarea
+              id="cancelReason"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              rows={3}
+              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-muted transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+              placeholder="Ex : erreur de saisie, vente doublonnée..."
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setCancelModalOpen(false)}>
+              Fermer
+            </Button>
+            <Button variant="danger" type="button" onClick={handleConfirmCancelSales}>
+              Confirmer l'annulation
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

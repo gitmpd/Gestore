@@ -221,6 +221,7 @@ export function CustomerOrdersPage() {
     await db.sales.add({
       id: saleId,
       userId: user.id,
+      userName: user.name,
       customerId: deliverOrder.customerId,
       date: now,
       total: deliverOrder.total,

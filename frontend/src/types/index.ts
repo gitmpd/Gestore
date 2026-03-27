@@ -75,6 +75,7 @@ export interface Supplier extends SyncFields {
 export interface Sale extends SyncFields {
   id: string;
   userId: string;
+  userName?: string;
   customerId?: string;
   date: string;
   total: number;
