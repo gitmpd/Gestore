@@ -94,9 +94,18 @@ export function StockPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const vResult = validate(stockMovementSchema, { productId, type, quantity, reason });
+    const normalizedReason = reason.trim();
+    const vResult = validate(stockMovementSchema, { productId, type, quantity, reason: normalizedReason });
     if (!vResult.success) {
       toast.error(Object.values(vResult.errors)[0]);
+      return;
+    }
+    if (type === 'ajustement' && quantity < 0) {
+      toast.error('La quantite d\'ajustement ne peut pas etre negative');
+      return;
+    }
+    if (type === 'retour' && quantity <= 0) {
+      toast.error('La quantite doit etre superieure a 0 pour un retour client');
       return;
     }
     const product = await db.products.get(productId);
@@ -110,7 +119,7 @@ export function StockPage() {
     } else {
       if (quantity > product.quantity && !isGerant) {
         toast.error(
-          `Ajustement invalide: seul le gerant peut augmenter le stock (${product.quantity} -> ${quantity}).`
+          `Ajustement invalide: seul le gerant peut modifier le stock (${product.quantity} -> ${quantity}).`
         );
         return;
       }
@@ -130,7 +139,7 @@ export function StockPage() {
       type,
       quantity,
       date: now,
-      reason,
+      reason: normalizedReason,
       userId: currentUser?.id,
       createdAt: now,
       updatedAt: now,
@@ -147,8 +156,8 @@ export function StockPage() {
       entityName: product.name,
       details:
         type === 'ajustement'
-          ? `${typeLabel}: ${previousQty} -> ${newQty} (${deltaLabel}) - ${reason}`
-          : `${typeLabel}: +${quantity} (${previousQty} -> ${newQty}) - ${reason}`,
+          ? `${typeLabel}: ${previousQty} -> ${newQty} (${deltaLabel})${normalizedReason ? ` - ${normalizedReason}` : ''}`
+          : `${typeLabel}: +${quantity} (${previousQty} -> ${newQty})${normalizedReason ? ` - ${normalizedReason}` : ''}`,
     });
 
     setModalOpen(false);
@@ -264,7 +273,7 @@ export function StockPage() {
                     </Td>
                     <Td className="font-medium">{m.productName}</Td>
                     <Td className="font-semibold">{m.quantity}</Td>
-                    <Td className="text-text-muted">{m.reason}</Td>
+                    <Td className="text-text-muted">{m.reason?.trim() ? m.reason : '—'}</Td>
                     {isGerant && (
                       <Td className="text-sm">{m.userId ? userMap.get(m.userId) ?? '—' : '—'}</Td>
                     )}
@@ -331,13 +340,17 @@ export function StockPage() {
             placeholder="Ex : 10"
             required
           />
+          {type === 'ajustement' && (
+            <p className="text-xs text-text-muted">
+              Vous pouvez mettre `0` si le stock reel est vide.
+            </p>
+          )}
           <Input
             id="reason"
-            label="Raison"
+            label="Raison (optionnel)"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="Ex: Retour client, correction inventaire..."
-            required
           />
 
           <div className="flex justify-end gap-2 pt-2">

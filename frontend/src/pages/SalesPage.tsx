@@ -165,81 +165,102 @@ export function SalesPage() {
     try {
       const now = nowISO();
       const saleId = generateReference();
+      await db.transaction(
+        'rw',
+        [db.sales, db.saleItems, db.products, db.stockMovements, db.customers, db.creditTransactions],
+        async () => {
+          const productRecords = await Promise.all(cart.map((item) => db.products.get(item.productId)));
+          const productMap = new Map(
+            productRecords
+              .filter((product): product is NonNullable<typeof product> => Boolean(product))
+              .map((product) => [product.id, product])
+          );
 
-      await db.sales.add({
-        id: saleId,
-        userId: user.id,
-        customerId: customerId || undefined,
-        date: now,
-        total,
-        paymentMethod,
-        status: 'completed',
-        createdAt: now,
-        updatedAt: now,
-        syncStatus: 'pending',
-      });
+          for (const item of cart) {
+            const product = productMap.get(item.productId);
+            if (!product || product.deleted) {
+              throw new Error(`Le produit "${item.productName}" est introuvable. Rechargez la liste puis recommencez.`);
+            }
+            if (item.quantity > product.quantity) {
+              throw new Error(`Stock insuffisant pour "${product.name}" (${product.quantity} disponible(s)).`);
+            }
+          }
 
-      for (const item of cart) {
-        await db.saleItems.add({
-          id: generateId(),
-          saleId,
-          productId: item.productId,
-          productName: item.productName,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          total: item.quantity * item.unitPrice,
-          createdAt: now,
-          updatedAt: now,
-          syncStatus: 'pending',
-        });
-
-        const product = await db.products.get(item.productId);
-        if (product) {
-          await db.products.update(item.productId, {
-            quantity: Math.max(0, product.quantity - item.quantity),
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-
-          await db.stockMovements.add({
-            id: generateId(),
-            productId: item.productId,
-            productName: item.productName,
-            type: 'sortie',
-            quantity: item.quantity,
-            date: now,
-            reason: `Vente #${saleId}`,
+          await db.sales.add({
+            id: saleId,
             userId: user.id,
-            createdAt: now,
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-        }
-      }
-
-      if (paymentMethod === 'credit' && customerId) {
-        const customer = await db.customers.get(customerId);
-        if (customer) {
-          await db.customers.update(customerId, {
-            creditBalance: customer.creditBalance + total,
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-
-          await db.creditTransactions.add({
-            id: generateId(),
-            customerId,
-            saleId,
-            amount: total,
-            type: 'credit',
+            customerId: customerId || undefined,
             date: now,
-            note: `Vente #${saleId}`,
+            total,
+            paymentMethod,
+            status: 'completed',
             createdAt: now,
             updatedAt: now,
             syncStatus: 'pending',
           });
+
+          for (const item of cart) {
+            const product = productMap.get(item.productId)!;
+
+            await db.saleItems.add({
+              id: generateId(),
+              saleId,
+              productId: item.productId,
+              productName: item.productName,
+              quantity: item.quantity,
+              unitPrice: item.unitPrice,
+              total: item.quantity * item.unitPrice,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+
+            await db.products.update(item.productId, {
+              quantity: product.quantity - item.quantity,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+
+            await db.stockMovements.add({
+              id: generateId(),
+              productId: item.productId,
+              productName: item.productName,
+              type: 'sortie',
+              quantity: item.quantity,
+              date: now,
+              reason: `Vente #${saleId}`,
+              userId: user.id,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+          }
+
+          if (paymentMethod === 'credit' && customerId) {
+            const customer = await db.customers.get(customerId);
+            if (customer) {
+              await db.customers.update(customerId, {
+                creditBalance: customer.creditBalance + total,
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+
+              await db.creditTransactions.add({
+                id: generateId(),
+                customerId,
+                saleId,
+                amount: total,
+                type: 'credit',
+                date: now,
+                note: `Vente #${saleId}`,
+                createdAt: now,
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+            }
+          }
         }
-      }
+      );
 
       const itemsSummary = cart.map((i) => `${i.productName} x${i.quantity}`).join(', ');
       await logAction({

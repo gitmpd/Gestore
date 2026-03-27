@@ -40,13 +40,22 @@ export const expenseSchema = z.object({
   recurring: z.boolean(),
 });
 
-export const stockMovementSchema = z.object({
-  productId: z.string().min(1, 'Sélectionnez un produit'),
-  // Entrée/sortie sont créées automatiquement par les ventes/réceptions.
-  type: z.enum(['ajustement', 'retour']),
-  quantity: z.number().int().positive('La quantité doit être supérieure à 0'),
-  reason: z.string().min(3, 'La raison doit contenir au moins 3 caractères'),
-});
+export const stockMovementSchema = z
+  .object({
+    productId: z.string().min(1, 'Sélectionnez un produit'),
+    type: z.enum(['ajustement', 'retour']),
+    quantity: z.number().int('La quantité doit être un entier').min(0, 'La quantité ne peut pas être négative'),
+    reason: z.string().optional(),
+  })
+  .superRefine(({ type, quantity }, ctx) => {
+    if (type === 'retour' && quantity <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['quantity'],
+        message: 'La quantité doit être supérieure à 0 pour un retour client',
+      });
+    }
+  });
 
 export function validate<T>(schema: z.ZodSchema<T>, data: unknown): { success: true; data: T } | { success: false; errors: Record<string, string> } {
   const result = schema.safeParse(data);

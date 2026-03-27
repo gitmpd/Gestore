@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Pencil, Trash2, ArrowLeft, Download } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, ArrowLeft, Download, PackagePlus, Calculator } from 'lucide-react';
 import { db } from '@/db';
 import type { Product, ProductUsage } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
-import { generateId, nowISO, formatCurrency } from '@/lib/utils';
+import { generateId, generateSupplierOrderRef, nowISO, formatCurrency } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { productSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
@@ -48,11 +48,21 @@ export function ProductsPage() {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [methodModalOpen, setMethodModalOpen] = useState(false);
+  const [reorderModalOpen, setReorderModalOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editing, setEditing] = useState<Product | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [form, setForm] = useState<Partial<Product>>(emptyProduct());
+  const [supplierId, setSupplierId] = useState('');
+  const [orderQty, setOrderQty] = useState(1);
+  const [totalAmount, setTotalAmount] = useState(0);
+  const [unitPrice, setUnitPrice] = useState(0);
+  const [receiveNow, setReceiveNow] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
 
   const categories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
+  const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
 
   const products = useLiveQuery(async () => {
@@ -88,6 +98,48 @@ export function ProductsPage() {
       usage: product.usage,
     });
     setModalOpen(true);
+  };
+
+  const handleOrderQtyChange = (qty: number) => {
+    setOrderQty(qty);
+    if (qty > 0 && totalAmount > 0) {
+      setUnitPrice(totalAmount / qty);
+    }
+  };
+
+  const handleTotalAmountChange = (amount: number) => {
+    setTotalAmount(amount);
+    if (orderQty > 0 && amount > 0) {
+      setUnitPrice(amount / orderQty);
+    }
+  };
+
+  const openMethodModal = (product: Product) => {
+    setSelectedProduct(product);
+    setMethodModalOpen(true);
+  };
+
+  const openReorderModal = (product: Product) => {
+    setSelectedProduct(product);
+    setSupplierId(suppliers[0]?.id ?? '');
+    setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
+    setTotalAmount(0);
+    setUnitPrice(0);
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setReorderModalOpen(true);
+  };
+
+  const handleChooseSupplierOrder = () => {
+    if (!selectedProduct) return;
+    setMethodModalOpen(false);
+    openReorderModal(selectedProduct);
+  };
+
+  const handleChooseManualStockMovement = () => {
+    if (!selectedProduct) return;
+    setMethodModalOpen(false);
+    navigate(`/stock?product=${selectedProduct.id}`);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -226,6 +278,110 @@ export function ProductsPage() {
       toast.dismiss(loadingToast);
       toast.error('Erreur lors de la suppression');
     }
+  };
+
+  const handleCreateSupplierOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedProduct || orderQty <= 0 || totalAmount <= 0) {
+      toast.error('Verifie les donnees de la commande (quantite et montant total)');
+      return;
+    }
+
+    const now = nowISO();
+    const total = totalAmount;
+
+    let finalSupplierId = supplierId;
+    if (!finalSupplierId) {
+      finalSupplierId = generateId();
+      await db.suppliers.add({
+        id: finalSupplierId,
+        name: '',
+        phone: '-',
+        address: '-',
+        creditBalance: 0,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+    }
+
+    const orderId = generateSupplierOrderRef();
+    await db.supplierOrders.add({
+      id: orderId,
+      supplierId: finalSupplierId,
+      date: now,
+      total,
+      deposit: receiveNow && paymentMode === 'cash' ? total : 0,
+      status: receiveNow ? 'recue' : 'en_attente',
+      isCredit: receiveNow ? paymentMode === 'credit' : false,
+      userId: currentUser?.id,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await db.orderItems.add({
+      id: generateId(),
+      orderId,
+      productId: selectedProduct.id,
+      productName: selectedProduct.name,
+      quantity: orderQty,
+      unitPrice,
+      total,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    if (receiveNow) {
+      await db.products.update(selectedProduct.id, {
+        quantity: selectedProduct.quantity + orderQty,
+        buyPrice: unitPrice,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.stockMovements.add({
+        id: generateId(),
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        type: 'entree',
+        quantity: orderQty,
+        date: now,
+        reason: `Reception commande fournisseur #${orderId}`,
+        userId: currentUser?.id,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: finalSupplierId,
+        orderId,
+        amount: total,
+        type: paymentMode === 'credit' ? 'credit' : 'payment',
+        date: now,
+        note: paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande payee',
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      if (paymentMode === 'credit') {
+        const supplier = await db.suppliers.get(finalSupplierId);
+        if (supplier) {
+          await db.suppliers.update(finalSupplierId, {
+            creditBalance: (supplier.creditBalance ?? 0) + total,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        }
+      }
+    }
+
+    setReorderModalOpen(false);
+    toast.success(receiveNow ? 'Commande enregistree et stock mis a jour' : 'Commande fournisseur enregistree');
   };
 
   return (
@@ -403,6 +559,13 @@ export function ProductsPage() {
 
                   <Td>
                     <div className="flex gap-1">
+                      <button
+                        onClick={() => openMethodModal(p)}
+                        className="p-1.5 rounded hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+                        title="Choisir comment ravitailler ou modifier le stock"
+                      >
+                        <PackagePlus size={16} className="text-emerald-600" />
+                      </button>
                       <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700">
                         <Pencil size={16} className="text-text-muted" />
                       </button>
@@ -521,6 +684,168 @@ export function ProductsPage() {
               Annuler
             </Button>
             <Button type="submit">{editing ? 'Modifier' : 'Ajouter'}</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={methodModalOpen}
+        onClose={() => setMethodModalOpen(false)}
+        title={`Approvisionnement: ${selectedProduct?.name ?? ''}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            Choisissez la methode pour ravitailler ou modifier le stock de ce produit.
+          </p>
+
+          <button
+            type="button"
+            onClick={handleChooseSupplierOrder}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Commande fournisseur</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Creer une commande d'achat, en attente ou recue immediatement.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleChooseManualStockMovement}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Ajustement ou retour client</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Ouvrir le formulaire des mouvements de stock pour corriger le stock.
+            </p>
+          </button>
+
+          <div className="flex justify-end pt-2">
+            <Button variant="secondary" type="button" onClick={() => setMethodModalOpen(false)}>
+              Fermer
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={reorderModalOpen}
+        onClose={() => setReorderModalOpen(false)}
+        title={`Commander: ${selectedProduct?.name ?? ''}`}
+      >
+        <form onSubmit={handleCreateSupplierOrder} className="space-y-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-text">Fournisseur</label>
+            <select
+              className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Quantite</label>
+              <input
+                type="number"
+                min={1}
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={orderQty}
+                onChange={(e) => handleOrderQtyChange(Number(e.target.value) || 0)}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  className="w-full pl-8 rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                  value={totalAmount || ''}
+                  onChange={(e) => handleTotalAmountChange(Number(e.target.value) || 0)}
+                  placeholder="0"
+                  required
+                />
+              </div>
+            </div>
+          </div>
+
+          {orderQty > 0 && totalAmount > 0 && (
+            <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">Prix unitaire calcule :</span>
+                <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
+                  {(totalAmount / orderQty).toFixed(0)} FCFA
+                </span>
+              </div>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                Ce prix sera enregistre comme prix d'achat unitaire.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text">Traitement</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setReceiveNow(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  !receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                En attente
+              </button>
+              <button
+                type="button"
+                onClick={() => setReceiveNow(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                Recue maintenant
+              </button>
+            </div>
+          </div>
+
+          {receiveNow && (
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-text">Paiement fournisseur</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('cash')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Payee
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('credit')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'credit' ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  A credit
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setReorderModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">Enregistrer commande</Button>
           </div>
         </form>
       </Modal>
