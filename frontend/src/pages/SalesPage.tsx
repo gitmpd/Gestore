@@ -584,7 +584,7 @@ export function SalesPage() {
                         return items.slice(0, 3).map((i: SaleItemType) => (
                           <div key={i.id} className="leading-tight">
                             <span className="font-medium">{i.productName}</span>
-                            <span className="text-text-muted"> x{i.quantity}</span>
+                            <span className="text-text-muted"> ({i.quantity})</span>
                           </div>
                         ));
                       })()}
