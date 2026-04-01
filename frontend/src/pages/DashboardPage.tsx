@@ -12,6 +12,7 @@ import {
   Truck,
   Users,
   Wallet,
+  Landmark,
 } from 'lucide-react';
 import { db } from '@/db';
 import { Card, CardTitle } from '@/components/ui/Card';
@@ -187,6 +188,12 @@ export function DashboardPage() {
               title="Ajouter depense"
               subtitle="Saisir une sortie caisse"
               onClick={() => navigate('/expenses')}
+            />
+            <QuickActionCard
+              icon={Landmark}
+              title="Ajouter capital"
+              subtitle="Enregistrer un apport"
+              onClick={() => navigate('/capital')}
             />
             <QuickActionCard
               icon={ArrowRightLeft}

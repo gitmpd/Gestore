@@ -118,6 +118,7 @@ export async function seedTestData(userId: string) {
   await db.creditTransactions.clear();
   await db.supplierCreditTransactions.clear();
   await db.expenses.clear();
+  await db.capitalEntries.clear();
   await db.auditLogs.clear();
   await db.priceHistory.clear();
   await db.customers.clear();

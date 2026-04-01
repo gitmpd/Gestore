@@ -108,6 +108,7 @@ export function SettingsPage() {
       db.supplierCreditTransactions,
       db.auditLogs,
       db.expenses,
+      db.capitalEntries,
     ];
     let count = 0;
     for (const table of tables) {

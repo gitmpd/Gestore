@@ -1,14 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
-import { ScrollText, Search, Filter, Download, ArrowLeft } from 'lucide-react';
+import { ScrollText, Filter, Download, ArrowLeft } from 'lucide-react';
 import { db } from '@/db';
 import type { AuditLog, AuditAction, AuditEntity } from '@/types';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { Button } from '@/components/ui/Button';
-import { formatDateTime } from '@/lib/utils';
+import { formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 
 const actionLabels: Record<AuditAction, string> = {
@@ -61,6 +61,7 @@ const entityLabels: Record<AuditEntity, string> = {
   commande_client: 'Commande client',
   credit: 'Crédit',
   depense: 'Dépense',
+  capital: 'Capital',
 };
 
 export function AuditPage() {
@@ -119,11 +120,11 @@ export function AuditPage() {
       if (dateFrom && log.date < dateFrom) return false;
       if (dateTo && log.date > dateTo + 'T23:59:59') return false;
       if (search) {
-        const q = search.toLowerCase();
+        const q = normalizeForSearch(search);
         return (
-          log.userName.toLowerCase().includes(q) ||
-          (log.entityName?.toLowerCase().includes(q) ?? false) ||
-          (log.details?.toLowerCase().includes(q) ?? false)
+          normalizeForSearch(log.userName).includes(q) ||
+          (log.entityName ? normalizeForSearch(log.entityName).includes(q) : false) ||
+          (log.details ? normalizeForSearch(log.details).includes(q) : false)
         );
       }
       return true;

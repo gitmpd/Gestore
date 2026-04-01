@@ -17,6 +17,7 @@ const ReportsPage = lazy(() => import('@/pages/ReportsPage').then(m => ({ defaul
 const CategoriesPage = lazy(() => import('@/pages/CategoriesPage').then(m => ({ default: m.CategoriesPage })));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const ExpensesPage = lazy(() => import('@/pages/ExpensesPage').then(m => ({ default: m.ExpensesPage })));
+const CapitalPage = lazy(() => import('@/pages/CapitalPage').then(m => ({ default: m.CapitalPage })));
 const AuditPage = lazy(() => import('@/pages/AuditPage').then(m => ({ default: m.AuditPage })));
 const CustomerOrdersPage = lazy(() => import('@/pages/CustomerOrdersPage').then(m => ({ default: m.CustomerOrdersPage })));
 const SupplierOrdersPage = lazy(() => import('@/pages/SupplierOrdersPage').then(m => ({ default: m.SupplierOrdersPage })));
@@ -108,6 +109,7 @@ export default function App() {
             <Route path="supplier-orders" element={<GerantRoute><SupplierOrdersPage /></GerantRoute>} />
             <Route path="suppliers" element={<GerantRoute><SuppliersPage /></GerantRoute>} />
             <Route path="expenses" element={<GerantRoute><ExpensesPage /></GerantRoute>} />
+            <Route path="capital" element={<GerantRoute><CapitalPage /></GerantRoute>} />
             <Route path="reports" element={<GerantRoute><ReportsPage /></GerantRoute>} />
             <Route path="profile" element={<ProfilePage />} />
             <Route

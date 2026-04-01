@@ -6,7 +6,7 @@ import { Package, ArrowLeft, Search, TrendingDown, CheckCircle, ArrowRightLeft, 
 import { db } from '@/db';
 import type { Product } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, generateSupplierOrderRef, nowISO } from '@/lib/utils';
+import { generateId, generateSupplierOrderRef, nowISO, normalizeForSearch } from '@/lib/utils';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 
@@ -46,10 +46,10 @@ export function LowStockPage() {
       if (filter === 'low' && (p.quantity === 0 || p.quantity > p.alertThreshold)) return false;
       if (filter === 'ok' && p.quantity <= p.alertThreshold) return false;
       if (search) {
-        const q = search.toLowerCase();
+        const q = normalizeForSearch(search);
         return (
-          p.name.toLowerCase().includes(q) ||
-          (categoryMap.get(p.categoryId) ?? '').toLowerCase().includes(q)
+          normalizeForSearch(p.name).includes(q) ||
+          normalizeForSearch(categoryMap.get(p.categoryId) ?? '').includes(q)
         );
       }
       return true;
@@ -154,6 +154,7 @@ export function LowStockPage() {
       supplierId: finalSupplierId,
       date: now,
       total,
+      deposit: 0,
       status: receiveNow ? 'recue' : 'en_attente',
       isCredit: receiveNow ? paymentMode === 'credit' : false,
       userId: currentUser?.id,

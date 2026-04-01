@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
-import { generateId, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { trackDeletion } from '@/services/syncService';
@@ -42,7 +42,7 @@ export function CustomersPage() {
         (c) =>
           !c.deleted &&
           (!search ||
-            c.name.toLowerCase().includes(search.toLowerCase()) ||
+            normalizeForSearch(c.name).includes(normalizeForSearch(search)) ||
             c.phone.includes(search))
       )
       .sort((a, b) => a.name.localeCompare(b.name));

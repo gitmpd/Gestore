@@ -15,6 +15,7 @@ const TABLES = [
   'creditTransactions',
   'auditLogs',
   'expenses',
+  'capitalEntries',
   'customerOrders',
   'customerOrderItems',
   'priceHistory',
@@ -24,7 +25,7 @@ const TABLES = [
 type TableName = (typeof TABLES)[number];
 
 function getTable(name: TableName) {
-  return db[name];
+  return db[name] as any;
 }
 
 function getServerCandidates(): string[] {
@@ -79,7 +80,7 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
         ? await table.toArray()
         : await table.where('syncStatus').equals('pending').toArray();
       const pendingRecords = pendingRecordsRaw.filter(
-        (record) => !(record as { deleted?: boolean }).deleted
+        (record: unknown) => !(record as { deleted?: boolean }).deleted
       );
       const lastSync = localStorage.getItem(`lastSync_${tableName}`);
 
@@ -137,16 +138,16 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
 
       const table = getTable(tableName);
       const pending = await table.where('syncStatus').equals('pending').toArray();
-      const pendingIds = new Set(
+      const pendingIds = new Set<string>(
         pending
-          .map((record) => (record as { id?: string }).id)
-          .filter((id): id is string => typeof id === 'string')
+          .map((record: unknown) => (record as { id?: string }).id)
+          .filter((id: string | undefined): id is string => typeof id === 'string')
       );
       const serverPushedIds: string[] = Array.isArray(result.pushedIds)
-        ? result.pushedIds
+        ? (result.pushedIds as string[])
         : [];
       const serverFailedPushIds: string[] = Array.isArray(result.failedPushIds)
-        ? result.failedPushIds
+        ? (result.failedPushIds as string[])
         : [];
 
       let confirmedPushedIds = serverPushedIds.filter((id) => pendingIds.has(id));

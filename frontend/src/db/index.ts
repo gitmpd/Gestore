@@ -17,12 +17,14 @@ import type {
   CustomerOrder,
   CustomerOrderItem,
   SupplierCreditTransaction,
+  CapitalEntry,
 } from '@/types';
 
 class StoreDB extends Dexie {
   users!: EntityTable<User, 'id'>;
   auditLogs!: EntityTable<AuditLog, 'id'>;
   expenses!: EntityTable<Expense, 'id'>;
+  capitalEntries!: EntityTable<CapitalEntry, 'id'>;
   categories!: EntityTable<Category, 'id'>;
   products!: EntityTable<Product, 'id'>;
   customers!: EntityTable<Customer, 'id'>;
@@ -119,6 +121,10 @@ class StoreDB extends Dexie {
       suppliers: 'id, name, creditBalance, deleted, syncStatus',
       supplierOrders: 'id, supplierId, date, status, deposit, syncStatus',
       supplierCreditTransactions: 'id, supplierId, type, date, orderId, deleted, syncStatus',
+    });
+
+    this.version(16).stores({
+      capitalEntries: 'id, date, source, userId, deleted, syncStatus',
     });
   }
 }

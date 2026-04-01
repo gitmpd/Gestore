@@ -99,6 +99,7 @@ export function ReportsPage() {
   const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
   const categories = useLiveQuery(() => db.categories.toArray()) ?? [];
   const allExpenses = useLiveQuery(() => db.expenses.toArray()) ?? [];
+  const capitalEntries = useLiveQuery(() => db.capitalEntries.toArray()) ?? [];
   const customerOrders = useLiveQuery(() => db.customerOrders.toArray()) ?? [];
   const customerCreditTransactions = useLiveQuery(() => db.creditTransactions.toArray()) ?? [];
   const supplierCreditTransactions = useLiveQuery(() => db.supplierCreditTransactions.toArray()) ?? [];
@@ -125,6 +126,11 @@ export function ReportsPage() {
   const filteredExpenses = useMemo(
     () => allExpenses.filter((e) => !e.deleted && inSelectedRange(e.date)),
     [allExpenses, startDate, dateFrom, dateTo]
+  );
+
+  const filteredCapitalEntries = useMemo(
+    () => capitalEntries.filter((entry) => !entry.deleted && inSelectedRange(entry.date)),
+    [capitalEntries, startDate, dateFrom, dateTo]
   );
 
   const saleById = useMemo(
@@ -202,7 +208,12 @@ export function ReportsPage() {
     [customerOrderCashEntries]
   );
 
-  const totalRevenue = totalSalesRevenue + totalCustomerCreditPayments + totalCustomerOrderEntries;
+  const totalCapitalEntries = useMemo(
+    () => filteredCapitalEntries.reduce((sum, entry) => sum + entry.amount, 0),
+    [filteredCapitalEntries]
+  );
+
+  const totalRevenue = totalSalesRevenue + totalCustomerCreditPayments + totalCustomerOrderEntries + totalCapitalEntries;
 
   const totalGrossProfit = useMemo(() => {
     let profit = 0;
@@ -291,6 +302,7 @@ export function ReportsPage() {
         ventesDetail: number;
         remboursementsCredits: number;
         commandesClients: number;
+        capital: number;
         depensesManuelles: number;
         paiementsFournisseurs: number;
       }
@@ -302,6 +314,7 @@ export function ReportsPage() {
           ventesDetail: 0,
           remboursementsCredits: 0,
           commandesClients: 0,
+          capital: 0,
           depensesManuelles: 0,
           paiementsFournisseurs: 0,
         });
@@ -326,6 +339,11 @@ export function ReportsPage() {
     customerOrderCashEntries.forEach((entry) => {
       const day = entry.date.slice(0, 10);
       ensureDay(day).commandesClients += entry.amount;
+    });
+
+    filteredCapitalEntries.forEach((entry) => {
+      const day = entry.date.slice(0, 10);
+      ensureDay(day).capital += entry.amount;
     });
 
     // 🔴 DÉPENSES MANUELLES
@@ -353,7 +371,8 @@ export function ReportsPage() {
         ventes:
           values.ventesDetail +
           values.remboursementsCredits +
-          values.commandesClients,
+          values.commandesClients +
+          values.capital,
 
         depenses:
           values.depensesManuelles +
@@ -366,6 +385,7 @@ export function ReportsPage() {
     filteredSales,
     filteredCustomerCreditPayments,
     customerOrderCashEntries,
+    filteredCapitalEntries,
     filteredExpenses,
     filteredSupplierPayments,
   ]);
@@ -459,6 +479,11 @@ export function ReportsPage() {
               <div className="flex justify-between">
                 <span>Commandes clients:</span>
                 <span>{formatCurrency(data.commandesClients)}</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span>Apports en capital:</span>
+                <span>{formatCurrency(data.capital)}</span>
               </div>
 
               <div className="flex justify-between font-bold border-t pt-1 mt-1">
@@ -674,6 +699,7 @@ export function ReportsPage() {
             <p className="text-text-muted">Ventes encaissées: {cashSalesCount} vente(s) ({formatCurrency(totalSalesRevenue)})</p>
             <p className="text-text-muted">Remboursements credits clients: {filteredCustomerCreditPayments.length} operation(s) ({formatCurrency(totalCustomerCreditPayments)})</p>
             <p className="text-text-muted">Entrées commandes clients: {customerOrderCashEntries.length} operation(s) ({formatCurrency(totalCustomerOrderEntries)})</p>
+            <p className="text-text-muted">Apports en capital: {filteredCapitalEntries.length} operation(s) ({formatCurrency(totalCapitalEntries)})</p>
           </div>
         )}
         {detailModalKey === 'grossProfit' && (

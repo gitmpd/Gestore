@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatDateTime } from '@/lib/utils';
+import { generateId, nowISO, formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { stockMovementSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
@@ -81,11 +81,11 @@ export function StockPage() {
       if (dateFrom && m.date < dateFrom) return false;
       if (dateTo && m.date > dateTo + 'T23:59:59') return false;
       if (stockSearch) {
-        const q = stockSearch.toLowerCase();
+        const q = normalizeForSearch(stockSearch);
         return (
-          m.productName.toLowerCase().includes(q) ||
-          m.reason.toLowerCase().includes(q) ||
-          (m.userId && (userMap.get(m.userId) ?? '').toLowerCase().includes(q))
+          normalizeForSearch(m.productName).includes(q) ||
+          normalizeForSearch(m.reason).includes(q) ||
+          (m.userId ? normalizeForSearch(userMap.get(m.userId) ?? '').includes(q) : false)
         );
       }
       return true;

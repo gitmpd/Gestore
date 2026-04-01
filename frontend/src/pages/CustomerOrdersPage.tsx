@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate, generateCustomerOrderRef } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateCustomerOrderRef, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 const statusLabels: Record<CustomerOrderStatus, string> = {
@@ -92,7 +92,6 @@ export function CustomerOrdersPage() {
   }) ?? [];
 
   const filteredOrders = useMemo(() => {
-    const customerMap = new Map(customers.map((c) => [c.id, c.name]));
     return orders.filter((o) => {
       if (statusFilter !== 'all' && o.status !== statusFilter) return false;
       if (paymentFilter === 'credit' && o.effectivePaymentMethod !== 'credit') return false;
@@ -100,9 +99,9 @@ export function CustomerOrdersPage() {
       if (dateFrom && o.date < dateFrom) return false;
       if (dateTo && o.date > dateTo + 'T23:59:59') return false;
       if (search) {
-        const q = search.toLowerCase();
-        const customerName = o.customerName.toLowerCase();
-        return o.id.toLowerCase().includes(q) || customerName.includes(q);
+        const q = normalizeForSearch(search);
+        const customerName = normalizeForSearch(o.customerName);
+        return normalizeForSearch(o.id).includes(q) || customerName.includes(q);
       }
       return true;
     });
@@ -111,7 +110,7 @@ export function CustomerOrdersPage() {
     return saleProducts.filter(
       (p) =>
         p.quantity > 0 &&
-        (p.name.toLowerCase().includes(search.toLowerCase()) || (p.barcode && p.barcode.includes(search)))
+        (normalizeForSearch(p.name).includes(normalizeForSearch(search)) || (p.barcode && p.barcode.includes(search)))
     );
   }, [saleProducts, search]);
   const orderTotal = orderLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0);

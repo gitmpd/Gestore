@@ -1,8 +1,8 @@
-import { useState, useMemo, type FormEvent } from 'react';
+import { useEffect, useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer } from 'lucide-react';
+import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { db } from '@/db';
 import type { PaymentMethod, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
 import { Button } from '@/components/ui/Button';
@@ -10,7 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, generateReference, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
+import { generateId, generateReference, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
@@ -25,13 +25,103 @@ interface CartItem {
   maxStock: number;
 }
 
+type QuickDateFilter = 'all' | 'today' | '7d' | 'month';
+type SaleSortKey = 'date' | 'total' | 'customer' | 'paymentMethod' | 'status';
+type SortDirection = 'asc' | 'desc';
+
+const SALES_LIST_STATE_KEY = 'sales-page-list-state';
+
 const paymentLabels: Record<PaymentMethod, string> = {
   cash: 'Espèces',
   credit: 'Crédit',
   mobile: 'Mobile Money',
 };
 
+function getQuickDateRange(filter: QuickDateFilter) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (filter === 'today') {
+    const iso = today.toISOString().slice(0, 10);
+    return { from: iso, to: iso };
+  }
+
+  if (filter === '7d') {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 6);
+    return { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+  }
+
+  if (filter === 'month') {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+  }
+
+  return { from: '', to: '' };
+}
+
+function getInitialListState() {
+  if (typeof window === 'undefined') {
+    return {
+      saleSearch: '',
+      paymentFilter: 'all' as PaymentMethod | 'all',
+      statusFilter: 'all' as SaleStatus | 'all',
+      dateFrom: '',
+      dateTo: '',
+      quickDateFilter: 'all' as QuickDateFilter,
+      sortKey: 'date' as SaleSortKey,
+      sortDirection: 'desc' as SortDirection,
+      page: 1,
+      selectedSaleIds: [] as string[],
+    };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SALES_LIST_STATE_KEY);
+    if (!raw) throw new Error('empty');
+    const parsed = JSON.parse(raw) as Partial<{
+      saleSearch: string;
+      paymentFilter: PaymentMethod | 'all';
+      statusFilter: SaleStatus | 'all';
+      dateFrom: string;
+      dateTo: string;
+      quickDateFilter: QuickDateFilter;
+      sortKey: SaleSortKey;
+      sortDirection: SortDirection;
+      page: number;
+      selectedSaleIds: string[];
+    }>;
+
+    return {
+      saleSearch: parsed.saleSearch ?? '',
+      paymentFilter: parsed.paymentFilter ?? 'all',
+      statusFilter: parsed.statusFilter ?? 'all',
+      dateFrom: parsed.dateFrom ?? '',
+      dateTo: parsed.dateTo ?? '',
+      quickDateFilter: parsed.quickDateFilter ?? 'all',
+      sortKey: parsed.sortKey ?? 'date',
+      sortDirection: parsed.sortDirection ?? 'desc',
+      page: typeof parsed.page === 'number' && parsed.page > 0 ? parsed.page : 1,
+      selectedSaleIds: Array.isArray(parsed.selectedSaleIds) ? parsed.selectedSaleIds.filter((id): id is string => typeof id === 'string') : [],
+    };
+  } catch {
+    return {
+      saleSearch: '',
+      paymentFilter: 'all' as PaymentMethod | 'all',
+      statusFilter: 'all' as SaleStatus | 'all',
+      dateFrom: '',
+      dateTo: '',
+      quickDateFilter: 'all' as QuickDateFilter,
+      sortKey: 'date' as SaleSortKey,
+      sortDirection: 'desc' as SortDirection,
+      page: 1,
+      selectedSaleIds: [] as string[],
+    };
+  }
+}
+
 export function SalesPage() {
+  const initialListState = getInitialListState();
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const isGerant = user?.role === 'gerant';
@@ -45,16 +135,20 @@ export function SalesPage() {
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [selectedItems, setSelectedItems] = useState<SaleItemType[]>([]);
-  const [selectedSaleIds, setSelectedSaleIds] = useState<string[]>([]);
+  const [selectedSaleIds, setSelectedSaleIds] = useState<string[]>(initialListState.selectedSaleIds);
   const [salesToCancel, setSalesToCancel] = useState<Sale[]>([]);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelAmount, setCancelAmount] = useState(0);
 
-  const [saleSearch, setSaleSearch] = useState('');
-  const [paymentFilter, setPaymentFilter] = useState<PaymentMethod | 'all'>('all');
-  const [statusFilter, setStatusFilter] = useState<SaleStatus | 'all'>('all');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [saleSearch, setSaleSearch] = useState(initialListState.saleSearch);
+  const [paymentFilter, setPaymentFilter] = useState<PaymentMethod | 'all'>(initialListState.paymentFilter);
+  const [statusFilter, setStatusFilter] = useState<SaleStatus | 'all'>(initialListState.statusFilter);
+  const [dateFrom, setDateFrom] = useState(initialListState.dateFrom);
+  const [dateTo, setDateTo] = useState(initialListState.dateTo);
+  const [quickDateFilter, setQuickDateFilter] = useState<QuickDateFilter>(initialListState.quickDateFilter);
+  const [sortKey, setSortKey] = useState<SaleSortKey>(initialListState.sortKey);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(initialListState.sortDirection);
+  const [page, setPage] = useState(initialListState.page);
 
   const allProducts = useLiveQuery(() => db.products.orderBy('name').toArray()) ?? [];
   const saleProducts = allProducts.filter((p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente');
@@ -105,16 +199,24 @@ export function SalesPage() {
       if (dateFrom && s.date < dateFrom) return false;
       if (dateTo && s.date > dateTo + 'T23:59:59') return false;
       if (saleSearch) {
-        const q = saleSearch.toLowerCase();
-        const clientName = s.customerId ? customerMap.get(s.customerId)?.toLowerCase() ?? '' : '';
-        const sellerName = getSellerName(s).toLowerCase();
+        const q = normalizeForSearch(saleSearch);
+        const clientName = s.customerId ? normalizeForSearch(customerMap.get(s.customerId) ?? '') : '';
+        const sellerName = normalizeForSearch(getSellerName(s));
+        const paymentText = normalizeForSearch(paymentLabels[s.paymentMethod]);
+        const paymentCode = normalizeForSearch(s.paymentMethod);
+        const statusText = normalizeForSearch(s.status === 'completed' ? 'Terminee' : 'Annulee');
+        const statusCode = normalizeForSearch(s.status);
         const productText = (saleItemsMap.get(s.id) ?? [])
-          .map((item) => item.productName.toLowerCase())
+          .map((item: SaleItemType) => normalizeForSearch(item.productName))
           .join(' ');
         return (
-          s.id.toLowerCase().includes(q) ||
+          normalizeForSearch(s.id).includes(q) ||
           clientName.includes(q) ||
           sellerName.includes(q) ||
+          paymentText.includes(q) ||
+          paymentCode.includes(q) ||
+          statusText.includes(q) ||
+          statusCode.includes(q) ||
           productText.includes(q)
         );
       }
@@ -122,10 +224,88 @@ export function SalesPage() {
     });
   }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, saleItemsMap, dateFrom, dateTo]);
 
+  const filteredSalesTotal = useMemo(
+    () => filteredSales.reduce((sum, sale) => sum + sale.total, 0),
+    [filteredSales]
+  );
+
+  const completedSales = useMemo(
+    () => filteredSales.filter((sale) => sale.status === 'completed'),
+    [filteredSales]
+  );
+
+  const cancelledSales = useMemo(
+    () => filteredSales.filter((sale) => sale.status === 'cancelled'),
+    [filteredSales]
+  );
+
+  const selectedFilteredSales = useMemo(
+    () => filteredSales.filter((sale) => selectedSaleIds.includes(sale.id)),
+    [filteredSales, selectedSaleIds]
+  );
+
+  const selectedSalesTotal = useMemo(
+    () => selectedFilteredSales.reduce((sum, sale) => sum + sale.total, 0),
+    [selectedFilteredSales]
+  );
+
+  const hasActiveFilters = Boolean(
+    saleSearch || paymentFilter !== 'all' || statusFilter !== 'all' || dateFrom || dateTo
+  );
+
+  const itemsPerPage = 12;
+
+  const sortedSales = useMemo(() => {
+    const sales = [...filteredSales];
+    sales.sort((a, b) => {
+      let left = '';
+      let right = '';
+
+      switch (sortKey) {
+        case 'total':
+          return sortDirection === 'asc' ? a.total - b.total : b.total - a.total;
+        case 'customer':
+          left = a.customerId ? customerMap.get(a.customerId) ?? 'Anonyme' : 'Anonyme';
+          right = b.customerId ? customerMap.get(b.customerId) ?? 'Anonyme' : 'Anonyme';
+          break;
+        case 'paymentMethod':
+          left = paymentLabels[a.paymentMethod];
+          right = paymentLabels[b.paymentMethod];
+          break;
+        case 'status':
+          left = a.status;
+          right = b.status;
+          break;
+        case 'date':
+        default:
+          left = a.date;
+          right = b.date;
+          break;
+      }
+
+      const comparison = left.localeCompare(right, 'fr', { sensitivity: 'base' });
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+    return sales;
+  }, [filteredSales, sortKey, sortDirection, customerMap]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedSales.length / itemsPerPage));
+  const currentPage = Math.min(page, totalPages);
+  const paginatedSales = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return sortedSales.slice(start, start + itemsPerPage);
+  }, [sortedSales, currentPage]);
+
+  const visiblePageNumbers = useMemo(() => {
+    const start = Math.max(1, currentPage - 2);
+    const end = Math.min(totalPages, currentPage + 2);
+    return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+  }, [currentPage, totalPages]);
+
   const filteredProducts = saleProducts.filter(
     (p) =>
       p.quantity > 0 &&
-      (p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
+      (normalizeForSearch(p.name).includes(normalizeForSearch(productSearch)) ||
         (p.barcode && p.barcode.includes(productSearch)))
   );
 
@@ -181,6 +361,71 @@ export function SalesPage() {
   const removeFromCart = (productId: string) => {
     setCart(cart.filter((c) => c.productId !== productId));
   };
+
+  const clearSaleFilters = () => {
+    setSaleSearch('');
+    setPaymentFilter('all');
+    setStatusFilter('all');
+    setDateFrom('');
+    setDateTo('');
+    setQuickDateFilter('all');
+    setPage(1);
+  };
+
+  const applyQuickDateFilter = (filter: QuickDateFilter) => {
+    const range = getQuickDateRange(filter);
+    setQuickDateFilter(filter);
+    setDateFrom(range.from);
+    setDateTo(range.to);
+    setPage(1);
+  };
+
+  const handleSort = (key: SaleSortKey) => {
+    if (sortKey === key) {
+      setSortDirection((direction) => (direction === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDirection(key === 'date' ? 'desc' : 'asc');
+    }
+    setPage(1);
+  };
+
+  const renderSortIcon = (key: SaleSortKey) => {
+    if (sortKey !== key) return <ArrowUpDown size={14} className="text-text-muted" />;
+    return sortDirection === 'asc'
+      ? <ArrowUp size={14} className="text-primary" />
+      : <ArrowDown size={14} className="text-primary" />;
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      SALES_LIST_STATE_KEY,
+      JSON.stringify({
+        saleSearch,
+        paymentFilter,
+        statusFilter,
+        dateFrom,
+        dateTo,
+        quickDateFilter,
+        sortKey,
+        sortDirection,
+        page: currentPage,
+        selectedSaleIds,
+      })
+    );
+  }, [
+    saleSearch,
+    paymentFilter,
+    statusFilter,
+    dateFrom,
+    dateTo,
+    quickDateFilter,
+    sortKey,
+    sortDirection,
+    currentPage,
+    selectedSaleIds,
+  ]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -492,13 +737,19 @@ export function SalesPage() {
             className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-surface text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
             placeholder="Rechercher par réf., client ou vendeur..."
             value={saleSearch}
-            onChange={(e) => setSaleSearch(e.target.value)}
+            onChange={(e) => {
+              setSaleSearch(e.target.value);
+              setPage(1);
+            }}
           />
         </div>
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={paymentFilter}
-          onChange={(e) => setPaymentFilter(e.target.value as PaymentMethod | 'all')}
+          onChange={(e) => {
+            setPaymentFilter(e.target.value as PaymentMethod | 'all');
+            setPage(1);
+          }}
         >
           <option value="all">Tous les paiements</option>
           <option value="cash">Espèces</option>
@@ -508,7 +759,10 @@ export function SalesPage() {
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as SaleStatus | 'all')}
+          onChange={(e) => {
+            setStatusFilter(e.target.value as SaleStatus | 'all');
+            setPage(1);
+          }}
         >
           <option value="all">Tous les statuts</option>
           <option value="completed">Terminée</option>
@@ -518,52 +772,326 @@ export function SalesPage() {
           type="date"
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => {
+            setDateFrom(e.target.value);
+            setQuickDateFilter('all');
+            setPage(1);
+          }}
           title="Date debut"
         />
         <input
           type="date"
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => {
+            setDateTo(e.target.value);
+            setQuickDateFilter('all');
+            setPage(1);
+          }}
           title="Date fin"
         />
+        {hasActiveFilters && (
+          <Button variant="secondary" size="sm" onClick={clearSaleFilters}>
+            Effacer filtres
+          </Button>
+        )}
       </div>
 
-      <div className="bg-surface rounded-xl border border-border">
+      <div className="flex flex-wrap gap-2">
+        {[
+          { key: 'all' as const, label: 'Tout' },
+          { key: 'today' as const, label: "Aujourd'hui" },
+          { key: '7d' as const, label: '7 jours' },
+          { key: 'month' as const, label: 'Ce mois' },
+        ].map((option) => (
+          <button
+            key={option.key}
+            type="button"
+            onClick={() => applyQuickDateFilter(option.key)}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+              quickDateFilter === option.key
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-border bg-surface px-4 py-3">
+        <p className="text-sm text-text-muted">
+          {filteredSales.length} vente(s) trouvée(s)
+        </p>
+        <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
+          <span className="text-xs font-semibold uppercase tracking-wide text-primary/80">
+            Ventes total
+          </span>
+          <span className="text-lg font-bold text-primary">
+            {formatCurrency(filteredSalesTotal)}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-border bg-surface px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Resultats</p>
+          <p className="mt-1 text-2xl font-bold text-text">{filteredSales.length}</p>
+          <p className="text-sm text-text-muted">vente(s) affichee(s)</p>
+        </div>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-900/10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Terminees</p>
+          <p className="mt-1 text-2xl font-bold text-emerald-700 dark:text-emerald-400">{completedSales.length}</p>
+          <p className="text-sm text-text-muted">{formatCurrency(completedSales.reduce((sum, sale) => sum + sale.total, 0))}</p>
+        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/50 dark:bg-red-900/10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">Annulees</p>
+          <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-400">{cancelledSales.length}</p>
+          <p className="text-sm text-text-muted">{formatCurrency(cancelledSales.reduce((sum, sale) => sum + sale.total, 0))}</p>
+        </div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Selection</p>
+          <p className="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-400">{selectedFilteredSales.length}</p>
+          <p className="text-sm text-text-muted">{formatCurrency(selectedSalesTotal)}</p>
+        </div>
+      </div>
+
+      {selectedFilteredSales.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
+          <div>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+              {selectedFilteredSales.length} vente(s) selectionnee(s)
+            </p>
+            <p className="text-sm text-text-muted">
+              Montant cumule: {formatCurrency(selectedSalesTotal)}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setSelectedSaleIds([])}>
+              Deselectionner
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => openCancelSalesModal(selectedFilteredSales)}
+            >
+              <Trash2 size={16} /> Annuler les ventes
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+            >
+              <ChevronLeft size={16} />
+            </Button>
+            <div className="flex items-center gap-1">
+              {visiblePageNumbers.map((pageNumber) => (
+                <button
+                  key={pageNumber}
+                  type="button"
+                  onClick={() => setPage(pageNumber)}
+                  className={`h-9 min-w-9 rounded-lg border px-3 text-sm font-medium transition-colors ${
+                    pageNumber === currentPage
+                      ? 'border-primary bg-primary text-white'
+                      : 'border-border bg-surface text-text hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage(totalPages)}
+              disabled={currentPage >= totalPages}
+            >
+              {'>>'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+            >
+              <ChevronRight size={16} />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {sortedSales.length === 0 ? (
+        <div className="rounded-xl border border-border bg-surface px-4 py-10 text-center text-text-muted">
+          <div className="space-y-2">
+            <p>{recentSales.length === 0 ? 'Aucune vente enregistrée' : 'Aucune vente ne correspond aux filtres'}</p>
+            {hasActiveFilters && (
+              <Button variant="secondary" size="sm" onClick={clearSaleFilters}>
+                Effacer les filtres
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-3 lg:hidden">
+          {paginatedSales.map((s) => {
+            const items = saleItemsMap.get(s.id) ?? [];
+            return (
+              <div
+                key={s.id}
+                className={`rounded-xl border px-4 py-3 shadow-sm ${
+                  selectedSaleIds.includes(s.id) ? 'border-primary bg-primary/5' : 'border-border bg-surface'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-text">{formatCurrency(s.total)}</p>
+                    <p className="text-xs text-text-muted">Ref: {s.id}</p>
+                    <p className="text-sm text-text-muted">{formatDateTime(s.date)}</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={selectedSaleIds.includes(s.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedSaleIds((r) => [...r, s.id]);
+                      else setSelectedSaleIds((r) => r.filter((id) => id !== s.id));
+                    }}
+                  />
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant={s.paymentMethod === 'credit' ? 'warning' : 'default'}>
+                    {paymentLabels[s.paymentMethod]}
+                  </Badge>
+                  <Badge variant={s.status === 'completed' ? 'success' : 'danger'}>
+                    {s.status === 'completed' ? 'Terminée' : 'Annulée'}
+                  </Badge>
+                </div>
+
+                <div className="mt-3 space-y-1 text-sm">
+                  <p><span className="text-text-muted">Client:</span> {s.customerId ? customerMap.get(s.customerId) ?? 'â€”' : 'Anonyme'}</p>
+                  {isGerant && <p><span className="text-text-muted">Vendeur:</span> {getSellerName(s)}</p>}
+                  <div>
+                    <p className="text-text-muted">Produits</p>
+                    <div className="space-y-1">
+                      {items.length === 0 ? (
+                        <span className="text-text-muted">-</span>
+                      ) : (
+                        items.slice(0, 3).map((i) => (
+                          <div key={i.id} className="leading-tight">
+                            <span className="font-medium">{i.productName}</span>
+                            <span className="text-text-muted"> ({i.quantity})</span>
+                          </div>
+                        ))
+                      )}
+                      {items.length > 3 ? <div className="text-xs text-text-muted">+{items.length - 3} autre(s)</div> : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button variant="outline" size="sm"
+                    onClick={() => viewSaleDetails(s)}
+                    className="p-1.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 text-primary"
+                    title="Voir le détail"
+                  >
+                    <Eye size={16} /> Voir
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      const itemsForPrint = (await db.saleItems.where('saleId').equals(s.id).toArray()).filter((i) => !(i as any).deleted);
+                      printReceipt({
+                        saleId: s.id,
+                        date: s.date,
+                        items: itemsForPrint,
+                        total: s.total,
+                        paymentMethod: paymentLabels[s.paymentMethod],
+                        customerName: s.customerId ? customerMap.get(s.customerId) : undefined,
+                        vendorName: userMap.get(s.userId),
+                        shopName: getShopNameOrDefault(),
+                      });
+                    }}
+                  >
+                    <Printer size={16} /> Imprimer
+                  </Button>
+                  {s.status === 'completed' && (
+                    <Button variant="danger" size="sm" className="col-span-2"
+                      onClick={() => handleDeleteSale(s)}
+                      
+                    >
+                        <XCircle size={16} /> Annuler
+                      </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className={`${sortedSales.length === 0 ? 'hidden' : 'hidden lg:block'} bg-surface rounded-xl border border-border`}>
         <Table>
-          <Thead>
+          <Thead className="sticky top-0 z-10 bg-surface">
             <Tr>
               <Th>
                 <input
                   type="checkbox"
-                  checked={filteredSales.length > 0 && selectedSaleIds.length === filteredSales.length}
+                  checked={paginatedSales.length > 0 && paginatedSales.every((s) => selectedSaleIds.includes(s.id))}
                   onChange={(e) => {
-                    if (e.target.checked) setSelectedSaleIds(filteredSales.map((s) => s.id));
-                    else setSelectedSaleIds([]);
+                    if (e.target.checked) {
+                      setSelectedSaleIds((prev) => Array.from(new Set([...prev, ...paginatedSales.map((s) => s.id)])));
+                    } else {
+                      setSelectedSaleIds((prev) => prev.filter((id) => !paginatedSales.some((s) => s.id === id)));
+                    }
                   }}
                 />
               </Th>
               <Th>Produits</Th>
-              <Th>Date</Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('date')} className="inline-flex items-center gap-1">
+                  Date {renderSortIcon('date')}
+                </button>
+              </Th>
               {isGerant && <Th>Vendeur</Th>}
-              <Th>Client</Th>
-              <Th>Montant</Th>
-              <Th>Paiement</Th>
-              <Th>Statut</Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('customer')} className="inline-flex items-center gap-1">
+                  Client {renderSortIcon('customer')}
+                </button>
+              </Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('total')} className="inline-flex items-center gap-1">
+                  Montant {renderSortIcon('total')}
+                </button>
+              </Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('paymentMethod')} className="inline-flex items-center gap-1">
+                  Paiement {renderSortIcon('paymentMethod')}
+                </button>
+              </Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('status')} className="inline-flex items-center gap-1">
+                  Statut {renderSortIcon('status')}
+                </button>
+              </Th>
               <Th />
             </Tr>
           </Thead>
           <Tbody>
-            {filteredSales.length === 0 ? (
+            {sortedSales.length === 0 ? (
               <Tr>
                 <Td colSpan={isGerant ? 8 : 7} className="text-center text-text-muted py-8">
+                  <div className="space-y-2">
                   {recentSales.length === 0 ? 'Aucune vente enregistrée' : 'Aucune vente ne correspond aux filtres'}
+                  </div>
                 </Td>
               </Tr>
             ) : (
-              filteredSales.map((s) => (
-                <Tr key={s.id}>
+              paginatedSales.map((s) => (
+                <Tr key={s.id} className={selectedSaleIds.includes(s.id) ? 'bg-primary/5' : undefined}>
                   <Td>
                     <input
                       type="checkbox"
@@ -595,12 +1123,17 @@ export function SalesPage() {
                     </div>
                   </Td>
 
-                  <Td className="text-text-muted">{formatDateTime(s.date)}</Td>
+                  <Td>
+                    <div className="space-y-1">
+                      <div className="font-medium text-text">{formatDateTime(s.date)}</div>
+                      <div className="text-xs text-text-muted">Ref: {s.id}</div>
+                    </div>
+                  </Td>
                   {isGerant && (
                     <Td className="text-sm">{getSellerName(s)}</Td>
                   )}
                   <Td>{s.customerId ? customerMap.get(s.customerId) ?? '—' : '—'}</Td>
-                  <Td className="font-semibold">{formatCurrency(s.total)}</Td>
+                  <Td className="font-semibold whitespace-nowrap">{formatCurrency(s.total)}</Td>
                   <Td>
                     <Badge variant={s.paymentMethod === 'credit' ? 'warning' : 'default'}>
                       {paymentLabels[s.paymentMethod]}
@@ -612,7 +1145,7 @@ export function SalesPage() {
                     </Badge>
                   </Td>
                   <Td>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 justify-end">
                       <button
                         onClick={() => viewSaleDetails(s)}
                         className="p-1.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 text-primary"
@@ -637,6 +1170,64 @@ export function SalesPage() {
           </Tbody>
         </Table>
       </div>
+
+      {sortedSales.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-border bg-surface px-4 py-3">
+          <p className="text-sm text-text-muted">
+            Page {currentPage} sur {totalPages}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+            >
+              <ChevronLeft size={16} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage(1)}
+              disabled={currentPage <= 1}
+            >
+              {'<<'}
+            </Button>
+            <div className="flex items-center gap-1">
+              {visiblePageNumbers.map((pageNumber) => (
+                <button
+                  key={pageNumber}
+                  type="button"
+                  onClick={() => setPage(pageNumber)}
+                  className={`h-9 min-w-9 rounded-lg border px-3 text-sm font-medium transition-colors ${
+                    pageNumber === currentPage
+                      ? 'border-primary bg-primary text-white'
+                      : 'border-border bg-surface text-text hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage(totalPages)}
+              disabled={currentPage >= totalPages}
+            >
+              {'>>'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+            >
+              <ChevronRight size={16} />
+            </Button>
+          </div>
+        </div>
+      )}
 
       <Modal
         open={modalOpen}
@@ -900,7 +1491,7 @@ export function SalesPage() {
                 <p>-</p>
               ) : salesToCancel.length === 1 ? (
                 (saleItemsMap.get(salesToCancel[0].id) ?? []).length > 0 ? (
-                  (saleItemsMap.get(salesToCancel[0].id) ?? []).map((item) => (
+                  (saleItemsMap.get(salesToCancel[0].id) ?? []).map((item: SaleItemType) => (
                     <p key={item.id}>
                       {item.productName} x{item.quantity}
                     </p>
@@ -911,7 +1502,7 @@ export function SalesPage() {
               ) : (
                 salesToCancel.map((sale) => {
                   const items = saleItemsMap.get(sale.id) ?? [];
-                  const names = items.map((item) => item.productName).slice(0, 2).join(', ');
+                  const names = items.map((item: SaleItemType) => item.productName).slice(0, 2).join(', ');
                   return (
                     <p key={sale.id}>
                       #{sale.id}: {names || '-'}{items.length > 2 ? '...' : ''}

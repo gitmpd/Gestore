@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card, CardTitle } from '@/components/ui/Card';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { expenseSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
@@ -100,11 +100,11 @@ export function ExpensesPage() {
       if (dateTo && e.date > dateTo + 'T23:59:59') return false;
       if (categoryFilter && e.category !== categoryFilter) return false;
       if (expenseSearch) {
-        const q = expenseSearch.toLowerCase();
+        const q = normalizeForSearch(expenseSearch);
         return (
-          e.description.toLowerCase().includes(q) ||
-          expenseCategoryLabels[e.category].toLowerCase().includes(q) ||
-          (e.userId && (userMap.get(e.userId) ?? '').toLowerCase().includes(q))
+          normalizeForSearch(e.description).includes(q) ||
+          normalizeForSearch(expenseCategoryLabels[e.category]).includes(q) ||
+          (e.userId ? normalizeForSearch(userMap.get(e.userId) ?? '').includes(q) : false)
         );
       }
       return true;

@@ -40,6 +40,13 @@ export const expenseSchema = z.object({
   recurring: z.boolean(),
 });
 
+export const capitalSchema = z.object({
+  source: z.string().min(2, 'La source doit contenir au moins 2 caractères'),
+  amount: z.number().positive('Le montant doit être supérieur à 0'),
+  date: z.string().min(1, 'La date est requise'),
+  note: z.string().optional(),
+});
+
 export const stockMovementSchema = z
   .object({
     productId: z.string().min(1, 'Sélectionnez un produit'),

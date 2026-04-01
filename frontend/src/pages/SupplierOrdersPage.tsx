@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Trash2, PackageCheck, XCircle, Eye, ArrowLeft, CreditCard } from 'lucide-react';
+import { Plus, Search, Trash2, PackageCheck, XCircle, Eye, ArrowLeft } from 'lucide-react';
 import { db } from '@/db';
 import type { OrderStatus, SupplierOrder } from '@/types';
 import { Button } from '@/components/ui/Button';
@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 
@@ -81,8 +81,8 @@ export function SupplierOrdersPage() {
     if (dateFrom && o.date < dateFrom) return false;
     if (dateTo && o.date > dateTo + 'T23:59:59') return false;
     if (search) {
-      const q = search.toLowerCase();
-      return o.id.toLowerCase().includes(q) || o.supplierName.toLowerCase().includes(q);
+      const q = normalizeForSearch(search);
+      return normalizeForSearch(o.id).includes(q) || normalizeForSearch(o.supplierName).includes(q);
     }
     return true;
   });

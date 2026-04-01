@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { Badge } from '@/components/ui/Badge';
-import { generateId, nowISO } from '@/lib/utils';
+import { generateId, nowISO, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { trackDeletion } from '@/services/syncService';
@@ -26,7 +26,7 @@ export function CategoriesPage() {
 
   const allCategories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
   const categories = allCategories.filter(
-    (c) => !c.deleted && (!search || c.name.toLowerCase().includes(search.toLowerCase()))
+    (c) => !c.deleted && (!search || normalizeForSearch(c.name).includes(normalizeForSearch(search)))
   );
 
   const productCounts = useLiveQuery(async () => {

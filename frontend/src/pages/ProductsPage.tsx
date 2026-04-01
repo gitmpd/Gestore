@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
-import { generateId, generateSupplierOrderRef, nowISO, formatCurrency } from '@/lib/utils';
+import { generateId, generateSupplierOrderRef, nowISO, formatCurrency, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { productSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
@@ -72,7 +72,7 @@ export function ProductsPage() {
       .filter((p) => {
         const matchSearch =
           !search ||
-          p.name.toLowerCase().includes(search.toLowerCase()) ||
+          normalizeForSearch(p.name).includes(normalizeForSearch(search)) ||
           (p.barcode && p.barcode.includes(search));
         const matchCategory = !categoryFilter || p.categoryId === categoryFilter;
         return matchSearch && matchCategory;

@@ -198,6 +198,16 @@ export interface Expense extends SyncFields {
   deleted?: boolean;
 }
 
+export interface CapitalEntry extends SyncFields {
+  id: string;
+  amount: number;
+  source: string;
+  note?: string;
+  date: string;
+  userId?: string;
+  deleted?: boolean;
+}
+
 export type AuditAction =
   | 'connexion'
   | 'deconnexion'
@@ -227,7 +237,8 @@ export type AuditEntity =
   | 'commande'
   | 'commande_client'
   | 'credit'
-  | 'depense';
+  | 'depense'
+  | 'capital';
 
 export interface AuditLog {
   id: string;
