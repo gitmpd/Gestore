@@ -224,11 +224,6 @@ export function SalesPage() {
     });
   }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, saleItemsMap, dateFrom, dateTo]);
 
-  const filteredSalesTotal = useMemo(
-    () => filteredSales.reduce((sum, sale) => sum + sale.total, 0),
-    [filteredSales]
-  );
-
   const completedSales = useMemo(
     () => filteredSales.filter((sale) => sale.status === 'completed'),
     [filteredSales]
@@ -242,6 +237,11 @@ export function SalesPage() {
   const selectedFilteredSales = useMemo(
     () => filteredSales.filter((sale) => selectedSaleIds.includes(sale.id)),
     [filteredSales, selectedSaleIds]
+  );
+
+  const filteredSalesTotal = useMemo(
+    () => filteredSales.reduce((sum, sale) => sum + sale.total, 0),
+    [filteredSales]
   );
 
   const selectedSalesTotal = useMemo(
@@ -305,6 +305,7 @@ export function SalesPage() {
   const filteredProducts = saleProducts.filter(
     (p) =>
       p.quantity > 0 &&
+      normalizeForSearch(productSearch).length >= 2 &&
       (normalizeForSearch(p.name).includes(normalizeForSearch(productSearch)) ||
         (p.barcode && p.barcode.includes(productSearch)))
   );
@@ -339,10 +340,18 @@ export function SalesPage() {
   };
 
   const updateCartQuantity = (productId: string, qty: number) => {
+    const currentItem = cart.find((c) => c.productId === productId);
+    const nextQty = Math.min(Math.max(0, qty), currentItem?.maxStock ?? 0);
+
+    if (nextQty <= 0) {
+      setCart(cart.filter((c) => c.productId !== productId));
+      return;
+    }
+
     setCart(
       cart.map((c) =>
         c.productId === productId
-          ? { ...c, quantity: Math.min(Math.max(0, qty), c.maxStock) }
+          ? { ...c, quantity: nextQty }
           : c
       )
     );
@@ -430,6 +439,10 @@ export function SalesPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (cart.length === 0 || !user) return;
+    if (paymentMethod === 'credit' && !customerId) {
+      toast.error('Selectionnez un client pour une vente a credit');
+      return;
+    }
 
     try {
       const now = nowISO();
@@ -751,11 +764,7 @@ export function SalesPage() {
             setPage(1);
           }}
         >
-          <option value="all">Tous les paiements</option>
-          <option value="cash">Espèces</option>
-          <option value="mobile">Mobile Money</option>
-          <option value="credit">Crédit</option>
-        </select>
+          <option value="all">Tous les paiements</option>          <option value="mobile">Mobile Money</option>        </select>
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={statusFilter}
@@ -823,36 +832,44 @@ export function SalesPage() {
         <p className="text-sm text-text-muted">
           {filteredSales.length} vente(s) trouvée(s)
         </p>
-        <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
-          <span className="text-xs font-semibold uppercase tracking-wide text-primary/80">
-            Ventes total
-          </span>
-          <span className="text-lg font-bold text-primary">
-            {formatCurrency(filteredSalesTotal)}
-          </span>
-        </div>
+        {isGerant && (
+          <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
+            <span className="text-xs font-semibold uppercase tracking-wide text-primary/80">
+              Ventes total
+            </span>
+            <span className="text-lg font-bold text-primary">
+              {formatCurrency(filteredSalesTotal)}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <div className="rounded-xl border border-border bg-surface px-4 py-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Resultats</p>
           <p className="mt-1 text-2xl font-bold text-text">{filteredSales.length}</p>
-          <p className="text-sm text-text-muted">vente(s) affichee(s)</p>
+          <p className="text-sm text-text-muted">vente(s) affichée(s)</p>
         </div>
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-900/10">
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Terminees</p>
           <p className="mt-1 text-2xl font-bold text-emerald-700 dark:text-emerald-400">{completedSales.length}</p>
-          <p className="text-sm text-text-muted">{formatCurrency(completedSales.reduce((sum, sale) => sum + sale.total, 0))}</p>
+          <p className="text-sm text-text-muted">
+            {isGerant ? formatCurrency(completedSales.reduce((sum, sale) => sum + sale.total, 0)) : 'vente(s) validée(s)'}
+          </p>
         </div>
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/50 dark:bg-red-900/10">
           <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">Annulees</p>
           <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-400">{cancelledSales.length}</p>
-          <p className="text-sm text-text-muted">{formatCurrency(cancelledSales.reduce((sum, sale) => sum + sale.total, 0))}</p>
+          <p className="text-sm text-text-muted">
+            {isGerant ? formatCurrency(cancelledSales.reduce((sum, sale) => sum + sale.total, 0)) : 'vente(s) annulée(s)'}
+          </p>
         </div>
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
           <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Selection</p>
           <p className="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-400">{selectedFilteredSales.length}</p>
-          <p className="text-sm text-text-muted">{formatCurrency(selectedSalesTotal)}</p>
+          <p className="text-sm text-text-muted">
+            {isGerant ? formatCurrency(selectedSalesTotal) : 'vente(s) cochée(s)'}
+          </p>
         </div>
       </div>
 
@@ -860,11 +877,13 @@ export function SalesPage() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
           <div>
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
-              {selectedFilteredSales.length} vente(s) selectionnee(s)
+              {selectedFilteredSales.length} vente(s) selectionnée(s)
             </p>
-            <p className="text-sm text-text-muted">
-              Montant cumule: {formatCurrency(selectedSalesTotal)}
-            </p>
+            {isGerant && (
+              <p className="text-sm text-text-muted">
+                Montant cumule: {formatCurrency(selectedSalesTotal)}
+              </p>
+            )}
           </div>
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={() => setSelectedSaleIds([])}>
@@ -1243,7 +1262,7 @@ export function SalesPage() {
               <input
                 type="text"
                 className="flex-1 bg-transparent outline-none text-text placeholder:text-text-muted min-w-0"
-                placeholder="Rechercher par nom ou code-barres..."
+                placeholder="Tapez au moins 2 lettres ou un code-barres..."
                 value={productSearch}
                 onChange={(e) => { setProductSearch(e.target.value); setProductDropdownOpen(true); }}
                 onFocus={() => setProductDropdownOpen(true)}
@@ -1252,7 +1271,11 @@ export function SalesPage() {
             </div>
             {productDropdownOpen && (
               <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg divide-y divide-border/50">
-                {filteredProducts.length > 0 ? (
+                {normalizeForSearch(productSearch).length < 2 ? (
+                  <p className="px-3 py-2 text-sm text-text-muted">
+                    Commencez par saisir au moins 2 lettres pour afficher les produits.
+                  </p>
+                ) : filteredProducts.length > 0 ? (
                   filteredProducts.map((p) => (
                     <button
                       key={p.id}
@@ -1277,6 +1300,15 @@ export function SalesPage() {
               </div>
             )}
           </div>
+
+          {cart.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border bg-surface/60 px-4 py-5 text-center">
+              <p className="text-sm font-semibold text-text">Panier vide</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Recherchez un produit par nom ou code-barres pour commencer la vente.
+              </p>
+            </div>
+          )}
 
           {cart.length > 0 && (
             <div className="border border-border rounded-lg overflow-hidden">
@@ -1342,15 +1374,26 @@ export function SalesPage() {
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-text">Mode de paiement</label>
-              <select
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-              >
-                <option value="cash">Espèces</option>
-                <option value="mobile">Mobile Money</option>
-                <option value="credit">Crédit</option>
-              </select>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { value: 'cash' as const, label: 'Espèces' },
+                  { value: 'mobile' as const, label: 'Mobile Money' },
+                  { value: 'credit' as const, label: 'Crédit' },
+                ]).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setPaymentMethod(option.value)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                      paymentMethod === option.value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="flex flex-col gap-1">
@@ -1365,6 +1408,11 @@ export function SalesPage() {
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
+              {paymentMethod === 'credit' && (
+                <p className="text-xs text-amber-700">
+                  Un client est obligatoire pour enregistrer une vente a credit.
+                </p>
+              )}
             </div>
           </div>
 
@@ -1561,3 +1609,4 @@ export function SalesPage() {
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -41,6 +41,8 @@ const emptyProduct = (): Partial<Product> => ({
   usage: 'achat_vente',
 });
 
+const FALLBACK_SUPPLIER_NAME = 'Fournisseur non renseigne';
+
 export function ProductsPage() {
   const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
@@ -58,11 +60,14 @@ export function ProductsPage() {
   const [orderQty, setOrderQty] = useState(1);
   const [totalAmount, setTotalAmount] = useState(0);
   const [unitPrice, setUnitPrice] = useState(0);
+  const [amountEntryMode, setAmountEntryMode] = useState<'total' | 'unit'>('total');
+  const [submitMode, setSubmitMode] = useState<'save' | 'save_and_stock'>('save');
   const [receiveNow, setReceiveNow] = useState(false);
   const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
 
   const categories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
   const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
+  const selectableSuppliers = suppliers.filter((s) => normalizeForSearch(s.name) !== normalizeForSearch(FALLBACK_SUPPLIER_NAME));
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
 
   const products = useLiveQuery(async () => {
@@ -80,9 +85,24 @@ export function ProductsPage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [search, categoryFilter]) ?? [];
 
+  useEffect(() => {
+    if (categories.length === 1 && !categoryFilter) {
+      setCategoryFilter(categories[0].id);
+    }
+  }, [categories, categoryFilter]);
+
+  useEffect(() => {
+    if (modalOpen && !editing && categories.length === 1 && !form.categoryId) {
+      setForm((prev) => ({ ...prev, categoryId: categories[0].id }));
+    }
+  }, [categories, editing, form.categoryId, modalOpen]);
+
   const openAdd = () => {
     setEditing(null);
-    setForm(emptyProduct());
+    setForm({
+      ...emptyProduct(),
+      categoryId: categories.length === 1 ? categories[0].id : '',
+    });
     setModalOpen(true);
   };
 
@@ -102,15 +122,38 @@ export function ProductsPage() {
 
   const handleOrderQtyChange = (qty: number) => {
     setOrderQty(qty);
-    if (qty > 0 && totalAmount > 0) {
+    if (qty <= 0) {
+      setTotalAmount(0);
+      setUnitPrice(0);
+      return;
+    }
+
+    if (amountEntryMode === 'total' && totalAmount > 0) {
       setUnitPrice(totalAmount / qty);
+    }
+
+    if (amountEntryMode === 'unit' && unitPrice > 0) {
+      setTotalAmount(unitPrice * qty);
     }
   };
 
   const handleTotalAmountChange = (amount: number) => {
+    setAmountEntryMode('total');
     setTotalAmount(amount);
     if (orderQty > 0 && amount > 0) {
       setUnitPrice(amount / orderQty);
+    } else {
+      setUnitPrice(0);
+    }
+  };
+
+  const handleUnitPriceChange = (amount: number) => {
+    setAmountEntryMode('unit');
+    setUnitPrice(amount);
+    if (orderQty > 0 && amount > 0) {
+      setTotalAmount(amount * orderQty);
+    } else {
+      setTotalAmount(0);
     }
   };
 
@@ -121,10 +164,11 @@ export function ProductsPage() {
 
   const openReorderModal = (product: Product) => {
     setSelectedProduct(product);
-    setSupplierId(suppliers[0]?.id ?? '');
+    setSupplierId(selectableSuppliers.length === 1 ? selectableSuppliers[0].id : '');
     setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
     setTotalAmount(0);
     setUnitPrice(0);
+    setAmountEntryMode('total');
     setReceiveNow(false);
     setPaymentMode('cash');
     setReorderModalOpen(true);
@@ -162,6 +206,7 @@ export function ProductsPage() {
     }
 
     const now = nowISO();
+    let createdProduct: Product | null = null;
 
     if (editing) {
       const changes: string[] = [];
@@ -218,7 +263,7 @@ export function ProductsPage() {
       });
     } else {
       const id = generateId();
-      await db.products.add({
+      createdProduct = {
         id,
         name: form.name!,
         barcode: form.barcode || '',
@@ -231,11 +276,19 @@ export function ProductsPage() {
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
-      });
+      };
+      await db.products.add(createdProduct);
       await logAction({ action: 'creation', entity: 'produit', entityId: id, entityName: form.name });
     }
 
     setModalOpen(false);
+    if (!editing && submitMode === 'save_and_stock' && createdProduct) {
+      setSelectedProduct(createdProduct);
+      openReorderModal(createdProduct);
+      toast.success('Produit ajoute. Vous pouvez maintenant l approvisionner.');
+      return;
+    }
+
     toast.success(editing ? 'Produit modifie' : 'Produit ajoute');
   };
 
@@ -292,17 +345,22 @@ export function ProductsPage() {
 
     let finalSupplierId = supplierId;
     if (!finalSupplierId) {
-      finalSupplierId = generateId();
-      await db.suppliers.add({
-        id: finalSupplierId,
-        name: '',
-        phone: '-',
-        address: '-',
-        creditBalance: 0,
-        createdAt: now,
-        updatedAt: now,
-        syncStatus: 'pending',
-      });
+      const fallbackSupplier = suppliers.find((s) => normalizeForSearch(s.name) === normalizeForSearch(FALLBACK_SUPPLIER_NAME));
+      if (fallbackSupplier) {
+        finalSupplierId = fallbackSupplier.id;
+      } else {
+        finalSupplierId = generateId();
+        await db.suppliers.add({
+          id: finalSupplierId,
+          name: FALLBACK_SUPPLIER_NAME,
+          phone: '-',
+          address: '-',
+          creditBalance: 0,
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
     }
 
     const orderId = generateSupplierOrderRef();
@@ -380,6 +438,7 @@ export function ProductsPage() {
       }
     }
 
+    setSupplierId('');
     setReorderModalOpen(false);
     toast.success(receiveNow ? 'Commande enregistree et stock mis a jour' : 'Commande fournisseur enregistree');
   };
@@ -589,39 +648,63 @@ export function ProductsPage() {
         title={editing ? 'Modifier le produit' : 'Nouveau produit'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            id="name"
-            label="Nom du produit"
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="Ex : Riz 5kg, Huile 1L..."
-            required
-          />
+          {!editing && (
+            <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+              <p className="text-sm font-semibold text-text">Ajout rapide produit</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Renseignez l'essentiel maintenant et le stock peut etre ajoute plus tard.
+              </p>
+            </div>
+          )}
 
-          <Input
-            id="barcode"
-            label="Code-barres (optionnel)"
-            value={form.barcode}
-            onChange={(e) => setForm({ ...form, barcode: e.target.value })}
-            placeholder="Ex : 6001234567890"
-          />
-
-          <div className="flex flex-col gap-1">
-            <label htmlFor="categoryId" className="text-sm font-medium text-text">
-              Categorie
-            </label>
-            <select
-              id="categoryId"
-              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
-              value={form.categoryId}
-              onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Input
+              id="name"
+              label="Nom du produit"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Ex : Riz 5kg"
               required
-            >
-              <option value="">Selectionner une categorie</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            />
+
+            <Input
+              id="sellPrice"
+              label="Prix de vente"
+              type="number"
+              min={0}
+              value={form.sellPrice}
+              onChange={(e) => setForm({ ...form, sellPrice: Number(e.target.value) })}
+              placeholder="Ex : 3500"
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="categoryId" className="text-sm font-medium text-text">
+                Categorie
+              </label>
+              <select
+                id="categoryId"
+                className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                value={form.categoryId}
+                onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
+                required
+              >
+                <option value="">Selectionner une categorie</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <Input
+              id="barcode"
+              label="Code-barres"
+              value={form.barcode}
+              onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+              placeholder="Optionnel"
+            />
           </div>
 
           <div className="flex flex-col gap-1">
@@ -648,22 +731,34 @@ export function ProductsPage() {
                 </button>
               ))}
             </div>
+            <p className="text-xs text-text-muted">
+              Choisissez simplement si le produit est vendu, achete, ou les deux.
+            </p>
           </div>
 
-          <div className="grid grid-cols-1 gap-3">
-            <Input
-              id="sellPrice"
-              label="Prix de vente"
-              type="number"
-              min={0}
-              value={form.sellPrice}
-              onChange={(e) => setForm({ ...form, sellPrice: Number(e.target.value) })}
-              placeholder="Ex : 3500"
-              required
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-3">
+          <div className="rounded-xl border border-border bg-surface/60 px-4 py-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-text">Seuil d'alerte stock</p>
+                <p className="text-xs text-text-muted">Quand alerter que le stock devient bas.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[0, 5, 10, 20].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setForm({ ...form, alertThreshold: value })}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                      Number(form.alertThreshold) === value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
             <Input
               id="alertThreshold"
               label="Seuil d'alerte"
@@ -683,7 +778,14 @@ export function ProductsPage() {
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
               Annuler
             </Button>
-            <Button type="submit">{editing ? 'Modifier' : 'Ajouter'}</Button>
+            {!editing && (
+              <Button type="submit" variant="outline" onClick={() => setSubmitMode('save_and_stock')}>
+                Enregistrer et approvisionner
+              </Button>
+            )}
+            <Button type="submit" onClick={() => setSubmitMode('save')}>
+              {editing ? 'Modifier' : 'Ajouter'}
+            </Button>
           </div>
         </form>
       </Modal>
@@ -735,19 +837,23 @@ export function ProductsPage() {
       >
         <form onSubmit={handleCreateSupplierOrder} className="space-y-4">
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-text">Fournisseur</label>
+            <label className="text-sm font-medium text-text">Fournisseur (optionnel)</label>
             <select
               className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
               value={supplierId}
               onChange={(e) => setSupplierId(e.target.value)}
             >
-              {suppliers.map((s) => (
+              <option value="">selectionnez un fournisseur</option>
+              {selectableSuppliers.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
+            <p className="text-xs text-text-muted">
+              Si vous laissez vide, la commande sera rattachée a un fournisseur non renseigné.
+            </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-text">Quantite</label>
               <input
@@ -767,26 +873,46 @@ export function ProductsPage() {
                   type="number"
                   min={0}
                   step="any"
-                  className="w-full pl-8 rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                  className={`w-full pl-8 rounded-lg border bg-surface text-text px-3 py-2 text-sm ${
+                    amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
                   value={totalAmount || ''}
                   onChange={(e) => handleTotalAmountChange(Number(e.target.value) || 0)}
                   placeholder="0"
-                  required
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Prix unitaire (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  className={`w-full pl-8 rounded-lg border bg-surface text-text px-3 py-2 text-sm ${
+                    amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={unitPrice || ''}
+                  onChange={(e) => handleUnitPriceChange(Number(e.target.value) || 0)}
+                  placeholder="0"
                 />
               </div>
             </div>
           </div>
-
-          {orderQty > 0 && totalAmount > 0 && (
+<p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
+          {orderQty > 0 && totalAmount > 0 && unitPrice > 0 && (
             <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">Prix unitaire calcule :</span>
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+                  {amountEntryMode === 'total' ? 'Prix unitaire calcule :' : 'Montant total calcule :'}
+                </span>
                 <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
-                  {(totalAmount / orderQty).toFixed(0)} FCFA
+                  {(amountEntryMode === 'total' ? unitPrice : totalAmount).toFixed(0)} FCFA
                 </span>
               </div>
               <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                Ce prix sera enregistre comme prix d'achat unitaire.
+                La commande enregistrera un prix d'achat unitaire de {unitPrice.toFixed(0)} FCFA.
               </p>
             </div>
           )}
@@ -810,7 +936,7 @@ export function ProductsPage() {
                   receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
                 }`}
               >
-                Recue maintenant
+                Reçue maintenant
               </button>
             </div>
           </div>
