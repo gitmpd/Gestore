@@ -440,7 +440,7 @@ export function ProductsPage() {
 
     setSupplierId('');
     setReorderModalOpen(false);
-    toast.success(receiveNow ? 'Commande enregistree et stock mis a jour' : 'Commande fournisseur enregistree');
+    toast.success(receiveNow ? 'Commande enregistrée et stock mis a jour' : 'Commande fournisseur enregistrée');
   };
 
   return (

@@ -2,10 +2,11 @@ import { useEffect, useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, UserPlus, CreditCard, CheckCircle2 } from 'lucide-react';
 import { db } from '@/db';
-import type { PaymentMethod, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
+import type { Customer, PaymentMethod, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
@@ -16,6 +17,7 @@ import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
+import { customerSchema, validate } from '@/lib/validation';
 
 interface CartItem {
   productId: string;
@@ -36,6 +38,11 @@ const paymentLabels: Record<PaymentMethod, string> = {
   credit: 'Crédit',
   mobile: 'Mobile Money',
 };
+
+const emptyQuickCustomer = (): Pick<Customer, 'name' | 'phone'> => ({
+  name: '',
+  phone: '',
+});
 
 function getQuickDateRange(filter: QuickDateFilter) {
   const today = new Date();
@@ -61,14 +68,16 @@ function getQuickDateRange(filter: QuickDateFilter) {
 }
 
 function getInitialListState() {
+  const todayRange = getQuickDateRange('today');
+
   if (typeof window === 'undefined') {
     return {
       saleSearch: '',
       paymentFilter: 'all' as PaymentMethod | 'all',
       statusFilter: 'all' as SaleStatus | 'all',
-      dateFrom: '',
-      dateTo: '',
-      quickDateFilter: 'all' as QuickDateFilter,
+      dateFrom: todayRange.from,
+      dateTo: todayRange.to,
+      quickDateFilter: 'today' as QuickDateFilter,
       sortKey: 'date' as SaleSortKey,
       sortDirection: 'desc' as SortDirection,
       page: 1,
@@ -96,9 +105,9 @@ function getInitialListState() {
       saleSearch: parsed.saleSearch ?? '',
       paymentFilter: parsed.paymentFilter ?? 'all',
       statusFilter: parsed.statusFilter ?? 'all',
-      dateFrom: parsed.dateFrom ?? '',
-      dateTo: parsed.dateTo ?? '',
-      quickDateFilter: parsed.quickDateFilter ?? 'all',
+      dateFrom: todayRange.from,
+      dateTo: todayRange.to,
+      quickDateFilter: 'today' as QuickDateFilter,
       sortKey: parsed.sortKey ?? 'date',
       sortDirection: parsed.sortDirection ?? 'desc',
       page: typeof parsed.page === 'number' && parsed.page > 0 ? parsed.page : 1,
@@ -109,9 +118,9 @@ function getInitialListState() {
       saleSearch: '',
       paymentFilter: 'all' as PaymentMethod | 'all',
       statusFilter: 'all' as SaleStatus | 'all',
-      dateFrom: '',
-      dateTo: '',
-      quickDateFilter: 'all' as QuickDateFilter,
+      dateFrom: todayRange.from,
+      dateTo: todayRange.to,
+      quickDateFilter: 'today' as QuickDateFilter,
       sortKey: 'date' as SaleSortKey,
       sortDirection: 'desc' as SortDirection,
       page: 1,
@@ -130,6 +139,10 @@ export function SalesPage() {
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [customerId, setCustomerId] = useState('');
+  const [quickCustomerForm, setQuickCustomerForm] = useState<Pick<Customer, 'name' | 'phone'>>(emptyQuickCustomer());
+  const [quickCustomerErrors, setQuickCustomerErrors] = useState<Record<string, string>>({});
+  const [quickCustomerOpen, setQuickCustomerOpen] = useState(false);
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [productSearch, setProductSearch] = useState('');
   const [productDropdownOpen, setProductDropdownOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -311,6 +324,24 @@ export function SalesPage() {
   );
 
   const total = cart.reduce((s, item) => s + item.quantity * item.unitPrice, 0);
+
+  const resetQuickCustomerForm = () => {
+    setQuickCustomerForm(emptyQuickCustomer());
+    setQuickCustomerErrors({});
+    setQuickCustomerOpen(false);
+    setCreatingCustomer(false);
+  };
+
+  const openNewSaleModal = () => {
+    resetQuickCustomerForm();
+    setModalOpen(true);
+  };
+
+  const closeNewSaleModal = () => {
+    setModalOpen(false);
+    setProductDropdownOpen(false);
+    resetQuickCustomerForm();
+  };
 
   const addToCart = (productId: string) => {
     const product = saleProducts.find((p) => p.id === productId);
@@ -556,10 +587,59 @@ export function SalesPage() {
       setCart([]);
       setCustomerId('');
       setPaymentMethod('cash');
-      setModalOpen(false);
+      closeNewSaleModal();
       toast.success('Vente enregistrée avec succès');
     } catch (err) {
       toast.error('Erreur lors de l\'enregistrement : ' + (err as Error).message);
+    }
+  };
+
+  const handleQuickCustomerSubmit = async () => {
+    if (!user || creatingCustomer) return;
+
+    const payload = {
+      name: quickCustomerForm.name.trim(),
+      phone: quickCustomerForm.phone.trim(),
+    };
+    const validation = validate(customerSchema, payload);
+    if (!validation.success) {
+      setQuickCustomerErrors(validation.errors);
+      return;
+    }
+
+    setCreatingCustomer(true);
+    try {
+      const now = nowISO();
+      const id = generateId();
+
+      await db.customers.add({
+        id,
+        name: payload.name,
+        phone: payload.phone,
+        creditBalance: 0,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await logAction({
+        action: 'creation',
+        entity: 'client',
+        entityId: id,
+        entityName: payload.name,
+        details: `Créé depuis la page de vente - Téléphone: ${payload.phone}`,
+      });
+
+      setCustomerId(id);
+      setQuickCustomerErrors({});
+      setQuickCustomerForm(emptyQuickCustomer());
+      setQuickCustomerOpen(false);
+      toast.success('Client créé et sélectionné');
+    } catch (error) {
+      console.error(error);
+      toast.error("Impossible d'ajouter le client");
+    } finally {
+      setCreatingCustomer(false);
     }
   };
 
@@ -729,7 +809,7 @@ export function SalesPage() {
           >
             <Download size={16} /> CSV
           </Button>
-          <Button onClick={() => setModalOpen(true)}>
+          <Button onClick={openNewSaleModal}>
             <ShoppingBag size={18} /> Nouvelle vente
           </Button>
           {selectedSaleIds.length > 0 && (
@@ -830,7 +910,7 @@ export function SalesPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-border bg-surface px-4 py-3">
         <p className="text-sm text-text-muted">
-          {filteredSales.length} vente(s) trouvée(s)
+          {filteredSales.length} vente(s)
         </p>
         {isGerant && (
           <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
@@ -848,7 +928,6 @@ export function SalesPage() {
         <div className="rounded-xl border border-border bg-surface px-4 py-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Resultats</p>
           <p className="mt-1 text-2xl font-bold text-text">{filteredSales.length}</p>
-          <p className="text-sm text-text-muted">vente(s) affichée(s)</p>
         </div>
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-900/10">
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Terminees</p>
@@ -998,7 +1077,7 @@ export function SalesPage() {
                       {items.length === 0 ? (
                         <span className="text-text-muted">-</span>
                       ) : (
-                        items.slice(0, 3).map((i) => (
+                        items.slice(0, 3).map((i: SaleItemType) => (
                           <div key={i.id} className="leading-tight">
                             <span className="font-medium">{i.productName}</span>
                             <span className="text-text-muted"> ({i.quantity})</span>
@@ -1250,9 +1329,9 @@ export function SalesPage() {
 
       <Modal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={closeNewSaleModal}
         title="Nouvelle vente"
-        className="max-w-2xl"
+        className="max-w-4xl"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
@@ -1396,28 +1475,158 @@ export function SalesPage() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-text">Client (optionnel)</label>
-              <select
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-              >
-                <option value="">— Aucun —</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-              {paymentMethod === 'credit' && (
-                <p className="text-xs text-amber-700">
-                  Un client est obligatoire pour enregistrer une vente a credit.
-                </p>
+            <div className="flex flex-col gap-2">
+              <div className="rounded-2xl border border-border bg-gradient-to-br from-slate-50 via-white to-slate-100/80 p-4 shadow-sm dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <CreditCard size={18} />
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-text">Client</label>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickCustomerOpen((open) => !open);
+                      setQuickCustomerErrors({});
+                    }}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                      quickCustomerOpen
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <UserPlus size={14} />
+                    {quickCustomerOpen ? 'Fermer' : 'Nouveau client'}
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  <select
+                    className="w-full rounded-xl border border-border bg-surface px-3 py-3 text-sm text-text shadow-sm transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                    value={customerId}
+                    onChange={(e) => {
+                      setCustomerId(e.target.value);
+                      if (e.target.value) {
+                        setQuickCustomerOpen(false);
+                        setQuickCustomerErrors({});
+                      }
+                    }}
+                  >
+                    <option value="">— Aucun —</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${
+                      customerId
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                        : 'bg-slate-100 text-text-muted dark:bg-slate-800'
+                    }`}>
+                      <CheckCircle2 size={14} />
+                      {customerId ? 'Client selectionne pour cette vente' : 'Aucun client selectionne'}
+                    </div>
+
+                    {!quickCustomerOpen && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickCustomerOpen(true);
+                          setQuickCustomerErrors({});
+                        }}
+                        className="text-xs font-semibold text-primary hover:underline"
+                      >
+                        Le client n'apparait pas ?
+                      </button>
+                    )}
+                  </div>
+
+                  {paymentMethod === 'credit' && (
+                    <div className={`rounded-xl border px-3 py-2 text-xs ${
+                      customerId
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-300'
+                        : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300'
+                    }`}>
+                      {customerId
+                        ? 'Le client est bien renseigne. La vente a credit peut etre enregistree.'
+                        : 'Une vente a credit doit obligatoirement etre rattachée a un client.'}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {quickCustomerOpen && (
+                <div className="overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-white to-sky-50 shadow-sm dark:from-primary/10 dark:via-slate-900 dark:to-slate-800">
+                  <div className="border-b border-primary/10 px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white">
+                        <UserPlus size={16} />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-text">Creation du client</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4 px-4 py-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Input
+                        id="saleQuickCustomerName"
+                        label="Nom du client"
+                        value={quickCustomerForm.name}
+                        onChange={(e) => {
+                          setQuickCustomerForm((prev) => ({ ...prev, name: e.target.value }));
+                          if (quickCustomerErrors.name) {
+                            setQuickCustomerErrors((prev) => ({ ...prev, name: '' }));
+                          }
+                        }}
+                        placeholder="Ex : Mamadou Traore"
+                        error={quickCustomerErrors.name}
+                        required
+                      />
+                      <Input
+                        id="saleQuickCustomerPhone"
+                        label="Telephone"
+                        value={quickCustomerForm.phone}
+                        onChange={(e) => {
+                          setQuickCustomerForm((prev) => ({ ...prev, phone: e.target.value }));
+                          if (quickCustomerErrors.phone) {
+                            setQuickCustomerErrors((prev) => ({ ...prev, phone: '' }));
+                          }
+                        }}
+                        placeholder="Ex : 76 12 34 56"
+                        error={quickCustomerErrors.phone}
+                        required
+                      />
+                    </div>
+
+                    <div className="rounded-xl bg-slate-100/80 px-3 py-2 text-xs text-text-muted dark:bg-slate-800/80">
+                      Conseil: ce client pourra etre reutilise plus tard pour ses prochaines ventes et pour le suivi du credit.
+                    </div>
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" type="button" onClick={resetQuickCustomerForm}>
+                        Annuler
+                      </Button>
+                      <Button type="button" onClick={handleQuickCustomerSubmit} disabled={creatingCustomer}>
+                        <UserPlus size={16} />
+                        {creatingCustomer ? 'Creation...' : 'Creer et selectionner'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
+            <Button variant="secondary" type="button" onClick={closeNewSaleModal}>
               Annuler
             </Button>
             <Button type="submit" disabled={cart.length === 0 || cart.some((c) => c.quantity <= 0)}>

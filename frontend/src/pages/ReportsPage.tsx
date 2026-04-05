@@ -25,7 +25,7 @@ import type { ExpenseCategory } from '@/types';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
-type Period = '7d' | '30d' | '90d';
+type Period = 'today' | '7d' | '30d' | '90d' | 'all';
 type MetricDetailKey =
   | 'revenue'
   | 'grossProfit'
@@ -36,12 +36,22 @@ type MetricDetailKey =
 
 function getStartDate(period: Period): Date {
   const d = new Date();
-  if (period === '7d') d.setDate(d.getDate() - 7);
+  if (period === 'today') d.setHours(0, 0, 0, 0);
+  else if (period === '7d') d.setDate(d.getDate() - 7);
   else if (period === '30d') d.setDate(d.getDate() - 30);
-  else d.setDate(d.getDate() - 90);
+  else if (period === '90d') d.setDate(d.getDate() - 90);
+  else d.setTime(0);
   d.setHours(0, 0, 0, 0);
   return d;
 }
+
+const periodOptions: Array<{ key: Period; label: string }> = [
+  { key: 'today', label: "Aujourd'hui" },
+  { key: '7d', label: '7 jours' },
+  { key: '30d', label: '30 jours' },
+  { key: '90d', label: '90 jours' },
+  { key: 'all', label: 'Tout' },
+];
 
 function formatAxisCompact(value: number): string {
   const abs = Math.abs(value);
@@ -112,7 +122,7 @@ export function ReportsPage() {
   const startDate = useMemo(() => getStartDate(period), [period]);
   const inSelectedRange = (isoDate: string) => {
     const hasExplicitRange = Boolean(dateFrom || dateTo);
-    if (!hasExplicitRange && new Date(isoDate) < startDate) return false;
+    if (!hasExplicitRange && period !== 'all' && new Date(isoDate) < startDate) return false;
     if (dateFrom && isoDate < dateFrom) return false;
     if (dateTo && isoDate > dateTo + 'T23:59:59') return false;
     return true;
@@ -293,6 +303,34 @@ export function ReportsPage() {
   const totalSupplierCredit = useMemo(
     () => suppliersToPay.reduce((sum, s) => sum + s.dueAmount, 0),
     [suppliersToPay]
+  );
+
+  const activeDateLabel = useMemo(() => {
+    if (dateFrom || dateTo) {
+      const fromLabel = dateFrom || 'debut';
+      const toLabel = dateTo || "aujourd'hui";
+      return `Du ${fromLabel} au ${toLabel}`;
+    }
+
+    const labels: Record<Period, string> = {
+      today: "Aujourd'hui",
+      '7d': 'Les 7 derniers jours',
+      '30d': 'Les 30 derniers jours',
+      '90d': 'Les 90 derniers jours',
+      all: 'Toute la periode',
+    };
+
+    return labels[period];
+  }, [period, dateFrom, dateTo]);
+
+  const reportSummary = useMemo(
+    () => [
+      { label: 'Ventes validees', value: `${filteredSales.length}` },
+      { label: 'Depenses enregistrees', value: `${filteredExpenses.length}` },
+      { label: 'Clients debiteurs', value: `${customersWhoOwe.length}` },
+      { label: 'Fournisseurs a payer', value: `${suppliersToPay.length}` },
+    ],
+    [filteredSales.length, filteredExpenses.length, customersWhoOwe.length, suppliersToPay.length]
   );
 
  const salesByDay = useMemo(() => {
@@ -534,34 +572,87 @@ export function ReportsPage() {
           </button>
           <h1 className="text-2xl font-bold text-text">Rapports</h1>
         </div>
-        <div className="flex gap-2">
-          {(['7d', '30d', '90d'] as const).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-                period === p
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
-              }`}
-            >
-              {p === '7d' ? '7 jours' : p === '30d' ? '30 jours' : '90 jours'}
-            </button>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-gradient-to-r from-slate-50 via-white to-slate-100 px-4 py-4 shadow-sm dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="space-y-2">
+            <p className="text-sm font-semibold text-text">Lecture des rapports</p>
+            <p className="text-sm text-text-muted">
+              Vue active: <span className="font-medium text-text">{activeDateLabel}</span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {periodOptions.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => {
+                    setPeriod(option.key);
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  className={`rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                    !dateFrom && !dateTo && period === option.key
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[430px]">
+            <label className="flex flex-col gap-1 text-sm text-text-muted">
+              <span>Du</span>
+              <input
+                type="date"
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={dateFrom}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  if (e.target.value) setPeriod('all');
+                }}
+                title="Date debut"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-text-muted">
+              <span>Au</span>
+              <input
+                type="date"
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={dateTo}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  if (e.target.value) setPeriod('all');
+                }}
+                title="Date fin"
+              />
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setPeriod('all');
+                  setDateFrom('');
+                  setDateTo('');
+                }}
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-slate-50 dark:hover:bg-slate-700"
+              >
+                Voir tout
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {reportSummary.map((item) => (
+            <div key={item.label} className="rounded-xl border border-border bg-surface/80 px-3 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">{item.label}</p>
+              <p className="mt-1 text-xl font-bold text-text">{item.value}</p>
+            </div>
           ))}
-          <input
-            type="date"
-            className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            title="Date debut"
-          />
-          <input
-            type="date"
-            className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            title="Date fin"
-          />
         </div>
       </div>
 
