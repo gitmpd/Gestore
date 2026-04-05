@@ -45,6 +45,30 @@ function getStartDate(period: Period): Date {
   return d;
 }
 
+function startOfDay(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function addDays(date: Date, days: number): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function formatPercentChange(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded.toFixed(1).replace(/\.0$/, '')}%`;
+}
+
 const periodOptions: Array<{ key: Period; label: string }> = [
   { key: 'today', label: "Aujourd'hui" },
   { key: '7d', label: '7 jours' },
@@ -148,6 +172,21 @@ export function ReportsPage() {
     [sales]
   );
 
+  const productMap = useMemo(
+    () => new Map(products.map((product) => [product.id, product])),
+    [products]
+  );
+
+  const saleItemsBySaleId = useMemo(() => {
+    const map = new Map<string, typeof saleItems>();
+    for (const item of saleItems) {
+      const group = map.get(item.saleId);
+      if (group) group.push(item);
+      else map.set(item.saleId, [item]);
+    }
+    return map;
+  }, [saleItems]);
+
   // Customer order inflows not already covered by cash/mobile sales:
   // - en_attente: deposit only
   // - livree + sale credit: deposit only
@@ -228,16 +267,16 @@ export function ReportsPage() {
   const totalGrossProfit = useMemo(() => {
     let profit = 0;
     for (const sale of filteredSales) {
-      const items = saleItems.filter((si) => si.saleId === sale.id);
+      const items = saleItemsBySaleId.get(sale.id) ?? [];
       for (const item of items) {
-        const product = products.find((p) => p.id === item.productId);
+        const product = productMap.get(item.productId);
         if (product) {
           profit += (item.unitPrice - product.buyPrice) * item.quantity;
         }
       }
     }
     return profit;
-  }, [filteredSales, saleItems, products]);
+  }, [filteredSales, saleItemsBySaleId, productMap]);
 
   const totalManualExpenses = useMemo(
     () => filteredExpenses.reduce((sum, e) => sum + e.amount, 0),
@@ -332,6 +371,171 @@ export function ReportsPage() {
     ],
     [filteredSales.length, filteredExpenses.length, customersWhoOwe.length, suppliersToPay.length]
   );
+
+  const comparisonRange = useMemo(() => {
+    if (dateFrom && dateTo) {
+      const currentStart = startOfDay(new Date(dateFrom));
+      const currentEnd = endOfDay(new Date(dateTo));
+      const durationDays = Math.max(1, Math.round((currentEnd.getTime() - currentStart.getTime()) / 86400000) + 1);
+      const previousEnd = endOfDay(addDays(currentStart, -1));
+      const previousStart = startOfDay(addDays(currentStart, -durationDays));
+      return { currentStart, currentEnd, previousStart, previousEnd };
+    }
+
+    if (dateFrom || dateTo || period === 'all') {
+      return null;
+    }
+
+    const currentEnd = endOfDay(new Date());
+    const currentStart = startOfDay(getStartDate(period));
+    const durationDays = Math.max(1, Math.round((currentEnd.getTime() - currentStart.getTime()) / 86400000) + 1);
+    const previousEnd = endOfDay(addDays(currentStart, -1));
+    const previousStart = startOfDay(addDays(currentStart, -durationDays));
+    return { currentStart, currentEnd, previousStart, previousEnd };
+  }, [period, dateFrom, dateTo]);
+
+  const isInComparisonRange = (isoDate: string, start: Date, end: Date) => {
+    const date = new Date(isoDate);
+    return date >= start && date <= end;
+  };
+
+  const previousPeriodMetrics = useMemo(() => {
+    if (!comparisonRange) return null;
+
+    const previousSales = sales.filter(
+      (sale) =>
+        !sale.deleted &&
+        sale.status === 'completed' &&
+        isInComparisonRange(sale.date, comparisonRange.previousStart, comparisonRange.previousEnd)
+    );
+    const previousCustomerCreditPayments = customerCreditTransactions.filter(
+      (transaction) =>
+        !transaction.deleted &&
+        transaction.type === 'payment' &&
+        isInComparisonRange(transaction.date, comparisonRange.previousStart, comparisonRange.previousEnd)
+    );
+    const previousCustomerOrderEntries = customerOrders
+      .filter(
+        (order) =>
+          order.status !== 'annulee' &&
+          isInComparisonRange(order.date, comparisonRange.previousStart, comparisonRange.previousEnd)
+      )
+      .map((order) => {
+        if (order.status === 'en_attente') return order.deposit > 0 ? order.deposit : 0;
+        if (order.status === 'livree') {
+          if (!order.saleId) return order.total;
+          const linkedSale = saleById.get(order.saleId);
+          if (linkedSale && linkedSale.paymentMethod === 'credit') {
+            return order.deposit > 0 ? order.deposit : 0;
+          }
+        }
+        return 0;
+      })
+      .reduce((sum, amount) => sum + amount, 0);
+    const previousCapitalEntries = capitalEntries
+      .filter(
+        (entry) =>
+          !entry.deleted && isInComparisonRange(entry.date, comparisonRange.previousStart, comparisonRange.previousEnd)
+      )
+      .reduce((sum, entry) => sum + entry.amount, 0);
+    const previousRevenue =
+      previousSales.filter((sale) => sale.paymentMethod !== 'credit').reduce((sum, sale) => sum + sale.total, 0) +
+      previousCustomerCreditPayments.reduce((sum, transaction) => sum + transaction.amount, 0) +
+      previousCustomerOrderEntries +
+      previousCapitalEntries;
+
+    const previousExpenses =
+      allExpenses
+        .filter(
+          (expense) =>
+            !expense.deleted && isInComparisonRange(expense.date, comparisonRange.previousStart, comparisonRange.previousEnd)
+        )
+        .reduce((sum, expense) => sum + expense.amount, 0) +
+      supplierCreditTransactions
+        .filter(
+          (transaction) =>
+            !transaction.deleted &&
+            transaction.type === 'payment' &&
+            isInComparisonRange(transaction.date, comparisonRange.previousStart, comparisonRange.previousEnd)
+        )
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+    return {
+      revenue: previousRevenue,
+      expenses: previousExpenses,
+      net: previousRevenue - previousExpenses,
+    };
+  }, [
+    comparisonRange,
+    sales,
+    customerCreditTransactions,
+    customerOrders,
+    saleById,
+    capitalEntries,
+    allExpenses,
+    supplierCreditTransactions,
+  ]);
+
+  const comparisonCards = useMemo(() => {
+    if (!previousPeriodMetrics) return [];
+
+    const buildChange = (current: number, previous: number) => {
+      if (previous === 0) {
+        if (current === 0) return 'Stable';
+        return 'Nouvelle valeur';
+      }
+      return formatPercentChange(((current - previous) / previous) * 100);
+    };
+
+    return [
+      {
+        label: 'Encaissements',
+        value: totalRevenue,
+        previous: previousPeriodMetrics.revenue,
+        change: buildChange(totalRevenue, previousPeriodMetrics.revenue),
+        tone: 'text-primary',
+      },
+      {
+        label: 'Decaissements',
+        value: totalExpenses,
+        previous: previousPeriodMetrics.expenses,
+        change: buildChange(totalExpenses, previousPeriodMetrics.expenses),
+        tone: 'text-red-600',
+      },
+      {
+        label: 'Solde net',
+        value: netProfitSimple,
+        previous: previousPeriodMetrics.net,
+        change: buildChange(netProfitSimple, previousPeriodMetrics.net),
+        tone: netProfitSimple >= 0 ? 'text-emerald-600' : 'text-red-600',
+      },
+    ];
+  }, [previousPeriodMetrics, totalRevenue, totalExpenses, netProfitSimple]);
+
+  const topProducts = useMemo(() => {
+    const aggregated = new Map<string, { name: string; quantity: number; revenue: number; profit: number }>();
+
+    for (const sale of filteredSales) {
+      const items = saleItemsBySaleId.get(sale.id) ?? [];
+      for (const item of items) {
+        const existing = aggregated.get(item.productId) ?? {
+          name: item.productName,
+          quantity: 0,
+          revenue: 0,
+          profit: 0,
+        };
+        const product = productMap.get(item.productId);
+        existing.quantity += item.quantity;
+        existing.revenue += item.total;
+        existing.profit += ((item.unitPrice - (product?.buyPrice ?? 0)) * item.quantity);
+        aggregated.set(item.productId, existing);
+      }
+    }
+
+    return [...aggregated.values()]
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+  }, [filteredSales, saleItemsBySaleId, productMap]);
 
  const salesByDay = useMemo(() => {
     const map = new Map<
@@ -646,7 +850,7 @@ export function ReportsPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
           {reportSummary.map((item) => (
             <div key={item.label} className="rounded-xl border border-border bg-surface/80 px-3 py-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">{item.label}</p>
@@ -655,6 +859,83 @@ export function ReportsPage() {
           ))}
         </div>
       </div>
+
+      <Card className="bg-gradient-to-br from-white via-slate-50 to-slate-100 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle>Resume financier</CardTitle>
+          </div>
+          {comparisonCards.length > 0 && (
+            <span className="self-start rounded-full border border-border px-3 py-1 text-xs font-medium text-text-muted">
+              Compare a la periode precedente
+            </span>
+          )}
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+          {comparisonCards.length > 0 ? comparisonCards.map((item) => (
+            <div key={item.label} className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
+              <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">{item.label}</p>
+              <p className={`mt-2 text-2xl font-bold ${item.tone}`}>
+                <CurrencyValue amount={item.value} />
+              </p>
+              <p className="mt-2 text-xs text-text-muted">
+                Periode precedente: {formatCurrency(item.previous)}
+              </p>
+              <p className={`mt-1 text-sm font-semibold ${item.change.startsWith('-') ? 'text-red-600' : 'text-emerald-600'}`}>
+                {item.change}
+              </p>
+            </div>
+          )) : (
+            <>
+              <div className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Encaissements</p>
+                <p className="mt-2 text-2xl font-bold text-primary">
+                  <CurrencyValue amount={totalRevenue} />
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Decaissements</p>
+                <p className="mt-2 text-2xl font-bold text-red-600">
+                  <CurrencyValue amount={totalExpenses} />
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Solde net</p>
+                <p className={`mt-2 text-2xl font-bold ${netProfitSimple >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                  <CurrencyValue amount={netProfitSimple} />
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="mt-5 border-t border-border pt-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle>Top produits</CardTitle>
+            </div>
+          </div>
+
+          {topProducts.length === 0 ? (
+            <p className="py-6 text-center text-sm text-text-muted">Aucune vente produit sur cette periode</p>
+          ) : (
+            <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+              {topProducts.map((product, index) => (
+                <div key={`${product.name}-${index}`} className="rounded-xl border border-border bg-surface/70 px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">#{index + 1}</p>
+                      <p className="truncate font-semibold text-text">{product.name}</p>
+                    </div>
+                    <p className="text-sm font-semibold text-primary">{formatCurrency(product.revenue)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         <Card

@@ -30,6 +30,31 @@ const usageVariants: Record<ProductUsage, 'info' | 'warning' | 'success'> = {
   achat_vente: 'success',
 };
 
+type ProductStatusFilter = 'all' | 'ok' | 'low' | 'out';
+
+const getProductStatus = (product: Pick<Product, 'quantity' | 'alertThreshold'>): Exclude<ProductStatusFilter, 'all'> => {
+  if (product.quantity === 0) return 'out';
+  if (product.quantity <= product.alertThreshold) return 'low';
+  return 'ok';
+};
+
+const productStatusLabels: Record<Exclude<ProductStatusFilter, 'all'>, string> = {
+  ok: 'OK',
+  low: 'Stock bas',
+  out: 'Rupture',
+};
+
+const productStatusVariants: Record<Exclude<ProductStatusFilter, 'all'>, 'success' | 'danger' | 'warning'> = {
+  ok: 'success',
+  low: 'warning',
+  out: 'danger',
+};
+
+const renderProductStatusBadge = (product: Pick<Product, 'quantity' | 'alertThreshold'>) => {
+  const status = getProductStatus(product);
+  return <Badge variant={productStatusVariants[status]}>{productStatusLabels[status]}</Badge>;
+};
+
 const emptyProduct = (): Partial<Product> => ({
   name: '',
   barcode: '',
@@ -49,6 +74,7 @@ export function ProductsPage() {
   const isGerant = currentUser?.role === 'gerant';
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<ProductStatusFilter>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [methodModalOpen, setMethodModalOpen] = useState(false);
   const [reorderModalOpen, setReorderModalOpen] = useState(false);
@@ -80,10 +106,11 @@ export function ProductsPage() {
           normalizeForSearch(p.name).includes(normalizeForSearch(search)) ||
           (p.barcode && p.barcode.includes(search));
         const matchCategory = !categoryFilter || p.categoryId === categoryFilter;
-        return matchSearch && matchCategory;
+        const matchStatus = statusFilter === 'all' || getProductStatus(p) === statusFilter;
+        return matchSearch && matchCategory && matchStatus;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [search, categoryFilter]) ?? [];
+  }, [search, categoryFilter, statusFilter]) ?? [];
 
   useEffect(() => {
     if (categories.length === 1 && !categoryFilter) {
@@ -188,13 +215,14 @@ export function ProductsPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const normalizedSellPrice = Number(form.sellPrice ?? 0);
 
     const result = validate(productSchema, {
       name: form.name || '',
       barcode: form.barcode,
       categoryId: form.categoryId || '',
       buyPrice: editing?.buyPrice ?? 0,
-      sellPrice: Number(form.sellPrice),
+      sellPrice: normalizedSellPrice,
       quantity: editing?.quantity ?? 0,
       alertThreshold: Number(form.alertThreshold),
       usage: form.usage,
@@ -217,8 +245,8 @@ export function ProductsPage() {
         const newCat = categories.find((c) => c.id === form.categoryId)?.name ?? '-';
         changes.push(`Categorie : ${oldCat} -> ${newCat}`);
       }
-      if (Number(form.sellPrice) !== editing.sellPrice) {
-        changes.push(`Prix vente : ${formatCurrency(editing.sellPrice)} -> ${formatCurrency(Number(form.sellPrice))}`);
+      if (normalizedSellPrice !== editing.sellPrice) {
+        changes.push(`Prix vente : ${formatCurrency(editing.sellPrice)} -> ${formatCurrency(normalizedSellPrice)}`);
       }
       if (Number(form.alertThreshold) !== editing.alertThreshold) {
         changes.push(`Seuil alerte : ${editing.alertThreshold} -> ${Number(form.alertThreshold)}`);
@@ -231,14 +259,14 @@ export function ProductsPage() {
         name: form.name!,
         barcode: form.barcode || '',
         categoryId: form.categoryId!,
-        sellPrice: Number(form.sellPrice),
+        sellPrice: normalizedSellPrice,
         alertThreshold: Number(form.alertThreshold),
         usage: form.usage || 'achat_vente',
         updatedAt: now,
         syncStatus: 'pending',
       });
 
-      const sellChanged = Number(form.sellPrice) !== editing.sellPrice;
+      const sellChanged = normalizedSellPrice !== editing.sellPrice;
       if (sellChanged) {
         await db.priceHistory.add({
           id: generateId(),
@@ -246,7 +274,7 @@ export function ProductsPage() {
           oldBuyPrice: editing.buyPrice,
           newBuyPrice: editing.buyPrice,
           oldSellPrice: editing.sellPrice,
-          newSellPrice: Number(form.sellPrice),
+          newSellPrice: normalizedSellPrice,
           userId: currentUser?.id,
           createdAt: now,
           updatedAt: now,
@@ -269,7 +297,7 @@ export function ProductsPage() {
         barcode: form.barcode || '',
         categoryId: form.categoryId!,
         buyPrice: 0,
-        sellPrice: Number(form.sellPrice),
+        sellPrice: normalizedSellPrice,
         quantity: 0,
         alertThreshold: Number(form.alertThreshold),
         usage: form.usage || 'achat_vente',
@@ -336,7 +364,7 @@ export function ProductsPage() {
   const handleCreateSupplierOrder = async (e: FormEvent) => {
     e.preventDefault();
     if (!selectedProduct || orderQty <= 0 || totalAmount <= 0) {
-      toast.error('Verifie les donnees de la commande (quantite et montant total)');
+      toast.error('Verifie les données de la commande (quantite et montant total)');
       return;
     }
 
@@ -539,6 +567,17 @@ export function ProductsPage() {
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
+
+        <select
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as ProductStatusFilter)}
+        >
+          <option value="all">Tous les statuts</option>
+          <option value="ok">OK</option>
+          <option value="low">Stock bas</option>
+          <option value="out">Rupture</option>
+        </select>
       </div>
 
       <div className="bg-surface rounded-xl border border-border">
@@ -608,13 +647,7 @@ export function ProductsPage() {
                   <Td>{formatCurrency(p.sellPrice)}</Td>
                   <Td className="font-semibold">{p.quantity}</Td>
 
-                  <Td>
-                    {p.quantity <= p.alertThreshold ? (
-                      <Badge variant="danger">Stock bas</Badge>
-                    ) : (
-                      <Badge variant="success">OK</Badge>
-                    )}
-                  </Td>
+                  <Td>{renderProductStatusBadge(p)}</Td>
 
                   <Td>
                     <div className="flex gap-1">
@@ -652,7 +685,7 @@ export function ProductsPage() {
             <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
               <p className="text-sm font-semibold text-text">Ajout rapide produit</p>
               <p className="mt-1 text-xs text-text-muted">
-                Renseignez l'essentiel maintenant et le stock peut etre ajoute plus tard.
+                Renseignez l'essentiel maintenant et le stock peut etre ajouté plus tard.
               </p>
             </div>
           )}
@@ -669,13 +702,17 @@ export function ProductsPage() {
 
             <Input
               id="sellPrice"
-              label="Prix de vente"
+              label="Prix de vente (optionnel)"
               type="number"
               min={0}
-              value={form.sellPrice}
-              onChange={(e) => setForm({ ...form, sellPrice: Number(e.target.value) })}
+              value={form.sellPrice ?? ''}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  sellPrice: e.target.value === '' ? undefined : Number(e.target.value),
+                })
+              }
               placeholder="Ex : 3500"
-              required
             />
           </div>
 
@@ -709,8 +746,11 @@ export function ProductsPage() {
 
           <div className="flex flex-col gap-1">
             <label htmlFor="usage" className="text-sm font-medium text-text">
-              Usage du produit
+              Usage du produit (optionnel)
             </label>
+            <p className="text-xs text-text-muted">
+              Choisissez simplement si le produit est pour la vente, l'achat, ou les deux.
+            </p>
             <div className="flex gap-2">
               {([
                 { value: 'achat_vente' as const, label: 'Achat & Vente' },
@@ -731,47 +771,46 @@ export function ProductsPage() {
                 </button>
               ))}
             </div>
-            <p className="text-xs text-text-muted">
-              Choisissez simplement si le produit est vendu, achete, ou les deux.
-            </p>
           </div>
 
-          <div className="rounded-xl border border-border bg-surface/60 px-4 py-3">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-text">Seuil d'alerte stock</p>
-                <p className="text-xs text-text-muted">Quand alerter que le stock devient bas.</p>
+          {editing ? (
+            <div className="rounded-xl border border-border bg-surface/60 px-4 py-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-text">Seuil d'alerte stock</p>
+                  <p className="text-xs text-text-muted">Quand alerter que le stock devient bas.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[0, 5, 10, 20].map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setForm({ ...form, alertThreshold: value })}
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        Number(form.alertThreshold) === value
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {[0, 5, 10, 20].map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setForm({ ...form, alertThreshold: value })}
-                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                      Number(form.alertThreshold) === value
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    {value}
-                  </button>
-                ))}
-              </div>
+              <Input
+                id="alertThreshold"
+                label="Seuil d'alerte"
+                type="number"
+                min={0}
+                value={form.alertThreshold}
+                onChange={(e) => setForm({ ...form, alertThreshold: Number(e.target.value) })}
+                placeholder="Ex : 5"
+                required
+              />
             </div>
-            <Input
-              id="alertThreshold"
-              label="Seuil d'alerte"
-              type="number"
-              min={0}
-              value={form.alertThreshold}
-              onChange={(e) => setForm({ ...form, alertThreshold: Number(e.target.value) })}
-              placeholder="Ex : 5"
-              required
-            />
-          </div>
-          <p className="text-xs text-text-muted">
-            Le stock initial est a 0. Les entrees de stock se font uniquement via reception de commande fournisseur ou retour client.
+          ) : null}
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
+            Le stock initial est à 0. Les entrées de stock se font uniquement via reception de commande fournisseur ou par ajustement/retour client.
           </p>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -779,8 +818,13 @@ export function ProductsPage() {
               Annuler
             </Button>
             {!editing && (
-              <Button type="submit" variant="outline" onClick={() => setSubmitMode('save_and_stock')}>
-                Enregistrer et approvisionner
+              <Button
+                type="submit"
+                variant="secondary"
+                className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                onClick={() => setSubmitMode('save_and_stock')}
+              >
+                Approvisionner
               </Button>
             )}
             <Button type="submit" onClick={() => setSubmitMode('save')}>
@@ -807,7 +851,7 @@ export function ProductsPage() {
           >
             <p className="text-sm font-semibold text-text">Commande fournisseur</p>
             <p className="text-xs text-text-muted mt-0.5">
-              Creer une commande d'achat, en attente ou recue immediatement.
+              Créer une commande d'achat, en attente ou recue immediatement.
             </p>
           </button>
 
@@ -952,7 +996,7 @@ export function ProductsPage() {
                     paymentMode === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border text-text-muted'
                   }`}
                 >
-                  Payee
+                  Payée 
                 </button>
                 <button
                   type="button"

@@ -126,6 +126,10 @@ class StoreDB extends Dexie {
     this.version(16).stores({
       capitalEntries: 'id, date, source, userId, deleted, syncStatus',
     });
+
+    this.version(17).stores({
+      creditTransactions: 'id, customerId, saleId, type, date, deleted, syncStatus',
+    });
   }
 }
 
