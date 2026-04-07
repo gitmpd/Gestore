@@ -89,7 +89,7 @@ function buildReceiptHtml(data: ReceiptData): string {
   <div class="divider"></div>
 
   <div class="info">
-    <span class="label">Ref :</span> #${data.saleId.slice(0, 8)}<br>
+    <span class="label">Ref :</span> #${data.saleId}<br>
     <span class="label">Date :</span> ${dateStr}<br>
     <span class="label">Paiement :</span> ${data.paymentMethod}<br>
     ${data.customerName ? `<span class="label">Client :</span> ${data.customerName}<br>` : ''}

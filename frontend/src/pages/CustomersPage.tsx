@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+﻿import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -16,6 +16,8 @@ import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { trackDeletion } from '@/services/syncService';
 
+type CreditFilter = 'all' | 'with-credit' | 'without-credit';
+
 const emptyCustomer = (): Partial<Customer> => ({
   name: '',
   phone: '',
@@ -26,6 +28,7 @@ export function CustomersPage() {
   const navigate = useNavigate();
   const isGerant = useAuthStore((s) => s.user?.role) === 'gerant';
   const [search, setSearch] = useState('');
+  const [creditFilter, setCreditFilter] = useState<CreditFilter>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [creditModalOpen, setCreditModalOpen] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -41,12 +44,15 @@ export function CustomersPage() {
       .filter(
         (c) =>
           !c.deleted &&
+          (creditFilter === 'all' ||
+            (creditFilter === 'with-credit' && c.creditBalance > 0) ||
+            (creditFilter === 'without-credit' && c.creditBalance <= 0)) &&
           (!search ||
             normalizeForSearch(c.name).includes(normalizeForSearch(search)) ||
             c.phone.includes(search))
       )
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [search]) ?? [];
+  }, [search, creditFilter]) ?? [];
 
   const customerTransactions = useLiveQuery(async () => {
     if (!selectedCustomer) return [];
@@ -199,14 +205,25 @@ export function CustomersPage() {
         </Button>
       </div>
 
-      <div className="relative">
-        <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
-        <input
-          className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-surface text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-          placeholder="Rechercher par nom ou téléphone..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+      <div className="flex flex-col gap-3 md:flex-row md:items-center">
+        <div className="relative flex-1">
+          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <input
+            className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-surface text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            placeholder="Rechercher par nom ou téléphone..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/30 md:w-56"
+          value={creditFilter}
+          onChange={(e) => setCreditFilter(e.target.value as CreditFilter)}
+        >
+          <option value="all">Tous les clients</option>
+          <option value="with-credit">Avec crédit</option>
+          <option value="without-credit">Sans crédit</option>
+        </select>
       </div>
 
       <div className="bg-surface rounded-xl border border-border">

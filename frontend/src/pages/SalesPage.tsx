@@ -212,10 +212,19 @@ export function SalesPage() {
 
   const getSaleProfit = (sale: Sale) => {
     const items = saleItemsMap.get(sale.id) ?? [];
-    return items.reduce((sum, item) => {
+    return items.reduce((sum: number, item: SaleItemType) => {
       const product = productMap.get(item.productId);
       const buyPrice = product?.buyPrice ?? 0;
       return sum + ((item.unitPrice - buyPrice) * item.quantity);
+    }, 0);
+  };
+
+  const getSalePurchaseCost = (sale: Sale) => {
+    const items = saleItemsMap.get(sale.id) ?? [];
+    return items.reduce((sum: number, item: SaleItemType) => {
+      const product = productMap.get(item.productId);
+      const buyPrice = product?.buyPrice ?? 0;
+      return sum + (buyPrice * item.quantity);
     }, 0);
   };
 
@@ -231,7 +240,7 @@ export function SalesPage() {
         const sellerName = normalizeForSearch(getSellerName(s));
         const paymentText = normalizeForSearch(paymentLabels[s.paymentMethod]);
         const paymentCode = normalizeForSearch(s.paymentMethod);
-        const statusText = normalizeForSearch(s.status === 'completed' ? 'Terminee' : 'Annulee');
+        const statusText = normalizeForSearch(s.status === 'completed' ? 'Terminée' : 'Annulée');
         const statusCode = normalizeForSearch(s.status);
         const productText = (saleItemsMap.get(s.id) ?? [])
           .map((item: SaleItemType) => normalizeForSearch(item.productName))
@@ -809,15 +818,31 @@ export function SalesPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              const rows = filteredSales.map((s) => [
-                s.id,
-                new Date(s.date).toLocaleDateString('fr-FR'),
-                formatCurrency(s.total),
-                formatCurrency(getSaleProfit(s)),
-                s.paymentMethod,
-                s.status === 'completed' ? 'Terminée' : 'Annulée',
-              ]);
-              exportCSV('ventes', ['Réf.', 'Date', 'Total', 'Paiement', 'Statut'], rows);
+              const rows = filteredSales.map((s) => {
+                if (isGerant) {
+                  return [
+                    s.id,
+                    new Date(s.date).toLocaleDateString('fr-FR'),
+                    formatCurrency(s.total),
+                    formatCurrency(getSalePurchaseCost(s)),
+                    formatCurrency(getSaleProfit(s)),
+                    s.paymentMethod,
+                    s.status === 'completed' ? 'Terminée' : 'Annulée',
+                  ];
+                }
+
+                return [
+                  s.id,
+                  new Date(s.date).toLocaleDateString('fr-FR'),
+                  formatCurrency(s.total),
+                  s.paymentMethod,
+                  s.status === 'completed' ? 'Terminée' : 'Annulée',
+                ];
+              });
+              const headers = isGerant
+                ? ['Ref.', 'Date', 'Montant', "Prix d'achat", 'Gain', 'Paiement', 'Statut']
+                : ['Réf.', 'Date', 'Montant', 'Paiement', 'Statut'];
+              exportCSV('ventes', headers, rows);
               toast.success('Export CSV téléchargé');
             }}
             disabled={filteredSales.length === 0}
@@ -937,14 +962,14 @@ export function SalesPage() {
           </p>
         </div>
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-900/10">
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Terminees</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Terminées</p>
           <p className="mt-1 text-2xl font-bold text-emerald-700 dark:text-emerald-400">{completedSales.length}</p>
           <p className="text-sm text-text-muted">
             {isGerant ? formatCurrency(completedSales.reduce((sum, sale) => sum + sale.total, 0)) : 'vente(s) validée(s)'}
           </p>
         </div>
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/50 dark:bg-red-900/10">
-          <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">Annulees</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">Annulées</p>
           <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-400">{cancelledSales.length}</p>
           <p className="text-sm text-text-muted">
             {isGerant ? formatCurrency(cancelledSales.reduce((sum, sale) => sum + sale.total, 0)) : 'vente(s) annulée(s)'}
@@ -1080,6 +1105,7 @@ export function SalesPage() {
                 <div className="mt-3 space-y-1 text-sm">
                   <p><span className="text-text-muted">Client:</span> {s.customerId ? customerMap.get(s.customerId) ?? 'â€”' : 'Anonyme'}</p>
                   {isGerant && <p><span className="text-text-muted">Vendeur:</span> {getSellerName(s)}</p>}
+                  {isGerant && <p><span className="text-text-muted">Prix d'achat:</span> <span className="font-medium">{formatCurrency(getSalePurchaseCost(s))}</span></p>}
                   {isGerant && <p><span className="text-text-muted">Gain:</span> <span className="font-medium">{formatCurrency(getSaleProfit(s))}</span></p>}
                   <div>
                     <p className="text-text-muted">Produits</p>
@@ -1175,6 +1201,7 @@ export function SalesPage() {
                   Montant {renderSortIcon('total')}
                 </button>
               </Th>
+              {isGerant && <Th>Prix d'achat</Th>}
               {isGerant && <Th>Gain</Th>}
               <Th>
                 <button type="button" onClick={() => handleSort('paymentMethod')} className="inline-flex items-center gap-1">
@@ -1192,7 +1219,7 @@ export function SalesPage() {
           <Tbody>
             {sortedSales.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 9 : 7} className="text-center text-text-muted py-8">
+                <Td colSpan={isGerant ? 10 : 7} className="text-center text-text-muted py-8">
                   <div className="space-y-2">
                   {recentSales.length === 0 ? 'Aucune vente enregistrée' : 'Aucune vente ne correspond aux filtres'}
                   </div>
@@ -1243,6 +1270,11 @@ export function SalesPage() {
                   )}
                   <Td>{s.customerId ? customerMap.get(s.customerId) ?? '—' : '—'}</Td>
                   <Td className="font-semibold whitespace-nowrap">{formatCurrency(s.total)}</Td>
+                  {isGerant && (
+                    <Td className="font-medium whitespace-nowrap">
+                      {formatCurrency(getSalePurchaseCost(s))}
+                    </Td>
+                  )}
                   {isGerant && (
                     <Td className="font-medium whitespace-nowrap text-emerald-700 dark:text-emerald-400">
                       {formatCurrency(getSaleProfit(s))}
@@ -1632,7 +1664,7 @@ export function SalesPage() {
                       </Button>
                       <Button type="button" onClick={handleQuickCustomerSubmit} disabled={creatingCustomer}>
                         <UserPlus size={16} />
-                        {creatingCustomer ? 'Creation...' : 'Creer et selectionner'}
+                        {creatingCustomer ? 'Creation...' : 'Créer et selectionner'}
                       </Button>
                     </div>
                   </div>
@@ -1710,8 +1742,8 @@ export function SalesPage() {
                   ))}
                 </tbody>
                 <tfoot className="border-t-2 border-border bg-slate-50 dark:bg-slate-800">
-                  <tr>
-                    <td colSpan={3} className="px-3 py-2 text-right font-semibold">Total</td>
+                    <tr>
+                      <td colSpan={3} className="px-3 py-2 text-right font-semibold">Total</td>
                     <td className="px-3 py-2 text-right text-lg font-bold text-primary">
                       {formatCurrency(selectedSale.total)}
                     </td>
