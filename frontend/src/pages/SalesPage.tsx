@@ -7,6 +7,7 @@ import { db } from '@/db';
 import type { Customer, PaymentMethod, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
@@ -27,7 +28,7 @@ interface CartItem {
   maxStock: number;
 }
 
-type QuickDateFilter = 'all' | 'today' | '7d' | 'month';
+type QuickDateFilter = 'all' | 'today' | 'week' | 'last_week' | 'month' | 'last_month';
 type SaleSortKey = 'date' | 'total' | 'customer' | 'paymentMethod' | 'status';
 type SortDirection = 'asc' | 'desc';
 
@@ -44,24 +45,48 @@ const emptyQuickCustomer = (): Pick<Customer, 'name' | 'phone'> => ({
   phone: '',
 });
 
+function toLocalDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function getQuickDateRange(filter: QuickDateFilter) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
+  const day = today.getDay();
+  const weekOffset = (day + 6) % 7; // Monday as week start
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - weekOffset);
+
   if (filter === 'today') {
-    const iso = today.toISOString().slice(0, 10);
+    const iso = toLocalDateKey(today);
     return { from: iso, to: iso };
   }
 
-  if (filter === '7d') {
-    const start = new Date(today);
-    start.setDate(start.getDate() - 6);
-    return { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+  if (filter === 'week') {
+    return { from: toLocalDateKey(weekStart), to: toLocalDateKey(today) };
+  }
+
+  if (filter === 'last_week') {
+    const start = new Date(weekStart);
+    start.setDate(start.getDate() - 7);
+    const end = new Date(weekStart);
+    end.setDate(end.getDate() - 1);
+    return { from: toLocalDateKey(start), to: toLocalDateKey(end) };
   }
 
   if (filter === 'month') {
     const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    return { from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+    return { from: toLocalDateKey(start), to: toLocalDateKey(today) };
+  }
+
+  if (filter === 'last_month') {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return { from: toLocalDateKey(start), to: toLocalDateKey(end) };
   }
 
   return { from: '', to: '' };
@@ -922,8 +947,10 @@ export function SalesPage() {
         {[
           { key: 'all' as const, label: 'Tout' },
           { key: 'today' as const, label: "Aujourd'hui" },
-          { key: '7d' as const, label: '7 jours' },
+          { key: 'week' as const, label: 'Cette semaine' },
+          { key: 'last_week' as const, label: 'Semaine dernière' },
           { key: 'month' as const, label: 'Ce mois' },
+          { key: 'last_month' as const, label: 'Mois dernier' },
         ].map((option) => (
           <button
             key={option.key}
@@ -1379,7 +1406,7 @@ export function SalesPage() {
         open={modalOpen}
         onClose={closeNewSaleModal}
         title="Nouvelle vente"
-        className="max-w-4xl"
+        className="max-w-4xl p-4 sm:p-6 mx-2 sm:mx-4"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
@@ -1438,70 +1465,127 @@ export function SalesPage() {
           )}
 
           {cart.length > 0 && (
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full text-sm text-text">
-                <thead className="bg-slate-50 dark:bg-slate-800 border-b border-border">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Produit</th>
-                    <th className="px-3 py-2 text-center w-24">Qté</th>
-                    <th className="px-3 py-2 text-right">Prix</th>
-                    <th className="px-3 py-2 text-right">Total</th>
-                    <th className="w-10" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {cart.map((item) => (
-                    <tr key={item.productId}>
-                      <td className="px-3 py-2">{item.productName}</td>
-                      <td className="px-3 py-2 text-center">
-                        <input
-                          type="number"
+            <div className="space-y-3">
+              <div className="hidden sm:block border border-border rounded-lg overflow-hidden">
+                <table className="w-full text-sm text-text">
+                  <thead className="bg-slate-50 dark:bg-slate-800 border-b border-border">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Produit</th>
+                      <th className="px-3 py-2 text-center w-24">Qté</th>
+                      <th className="px-3 py-2 text-right">Prix</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                      <th className="w-10" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {cart.map((item) => (
+                      <tr key={item.productId}>
+                        <td className="px-3 py-2">{item.productName}</td>
+                        <td className="px-3 py-2 text-center">
+                          <NumberInput
+                            min={0}
+                            max={item.maxStock}
+                            value={item.quantity}
+                            onValueChange={(value) => updateCartQuantity(item.productId, value)}
+                            className="w-16 text-center rounded border border-border bg-surface text-text px-1 py-0.5"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <NumberInput
+                            min={0}
+                            step="0.01"
+                            value={item.unitPrice}
+                            onValueChange={(value) => updateCartUnitPrice(item.productId, value)}
+                            className="w-24 text-right rounded border border-border bg-surface text-text px-1 py-0.5"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {formatCurrency(item.quantity * item.unitPrice)}
+                        </td>
+                        <td className="px-1">
+                          <button
+                            type="button"
+                            onClick={() => removeFromCart(item.productId)}
+                            className="p-1 text-danger hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="border-t-2 border-border bg-slate-50 dark:bg-slate-800">
+                    <tr>
+                      <td colSpan={3} className="px-3 py-2 text-right font-semibold">
+                        Total
+                      </td>
+                      <td className="px-3 py-2 text-right text-lg font-bold text-primary">
+                        {formatCurrency(total)}
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div className="sm:hidden space-y-2">
+                {cart.map((item) => (
+                  <div key={item.productId} className="rounded-lg border border-border bg-surface p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium text-text break-words">{item.productName}</p>
+                      <button
+                        type="button"
+                        onClick={() => removeFromCart(item.productId)}
+                        className="p-1 text-danger hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <p className="text-xs text-text-muted">Quantité</p>
+                        <NumberInput
                           min={0}
                           max={item.maxStock}
                           value={item.quantity}
-                          onChange={(e) =>
-                            updateCartQuantity(item.productId, Number(e.target.value) || 0)
-                          }
-                          className="w-16 text-center rounded border border-border bg-surface text-text px-1 py-0.5"
+                          onValueChange={(value) => updateCartQuantity(item.productId, value)}
+                          className="w-full text-center rounded border border-border bg-surface text-text px-2 py-1.5"
                         />
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <input type="number" min={0} step="0.01" value={item.unitPrice} onChange={(e) => updateCartUnitPrice(item.productId, Number(e.target.value) || 0) } className="w-24 text-right rounded border border-border bg-surface text-text px-1 py-0.5"/>
-                      </td>
-                      <td className="px-3 py-2 text-right font-medium">
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs text-text-muted">Prix unitaire</p>
+                        <NumberInput
+                          min={0}
+                          step="0.01"
+                          value={item.unitPrice}
+                          onValueChange={(value) => updateCartUnitPrice(item.productId, value)}
+                          className="w-full text-right rounded border border-border bg-surface text-text px-2 py-1.5"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1.5">
+                      <span className="text-xs text-text-muted">Sous-total</span>
+                      <span className="text-sm font-semibold text-text">
                         {formatCurrency(item.quantity * item.unitPrice)}
-                      </td>
-                      <td className="px-1">
-                        <button
-                          type="button"
-                          onClick={() => removeFromCart(item.productId)}
-                          className="p-1 text-danger hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot className="border-t-2 border-border bg-slate-50 dark:bg-slate-800">
-                  <tr>
-                    <td colSpan={3} className="px-3 py-2 text-right font-semibold">
-                      Total
-                    </td>
-                    <td className="px-3 py-2 text-right text-lg font-bold text-primary">
-                      {formatCurrency(total)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
+                      </span>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="rounded-lg border border-border bg-slate-50 dark:bg-slate-800 px-3 py-2 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-text">Total</span>
+                  <span className="text-lg font-bold text-primary">{formatCurrency(total)}</span>
+                </div>
+              </div>
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-text">Mode de paiement</label>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {([
                   { value: 'cash' as const, label: 'Espèces' },
                   { value: 'mobile' as const, label: 'Mobile Money' },
@@ -1525,7 +1609,7 @@ export function SalesPage() {
 
             <div className="flex flex-col gap-2">
               <div className="rounded-2xl border border-border bg-gradient-to-br from-slate-50 via-white to-slate-100/80 p-4 shadow-sm dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -1542,7 +1626,7 @@ export function SalesPage() {
                       setQuickCustomerOpen((open) => !open);
                       setQuickCustomerErrors({});
                     }}
-                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    className={`self-start inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
                       quickCustomerOpen
                         ? 'border-primary bg-primary/10 text-primary'
                         : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -1673,11 +1757,11 @@ export function SalesPage() {
             </div>
           </div>
 
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" type="button" onClick={closeNewSaleModal}>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button className="w-full sm:w-auto" variant="secondary" type="button" onClick={closeNewSaleModal}>
               Annuler
             </Button>
-            <Button type="submit" disabled={cart.length === 0 || cart.some((c) => c.quantity <= 0)}>
+            <Button className="w-full sm:w-auto" type="submit" disabled={cart.length === 0 || cart.some((c) => c.quantity <= 0)}>
               Valider la vente ({formatCurrency(total)})
             </Button>
           </div>
@@ -1822,13 +1906,12 @@ export function SalesPage() {
             <label htmlFor="cancelAmount" className="text-sm font-medium text-text">
               Montant a annuler
             </label>
-            <input
+            <NumberInput
               id="cancelAmount"
-              type="number"
               min={0}
               step="0.01"
               value={cancelAmount}
-              onChange={(e) => setCancelAmount(Number(e.target.value) || 0)}
+              onValueChange={setCancelAmount}
               disabled={salesToCancel.length > 1}
               className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
             />

@@ -7,6 +7,7 @@ import { db } from '@/db';
 import type { CapitalEntry } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Card } from '@/components/ui/Card';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
@@ -289,13 +290,12 @@ export function CapitalPage() {
             placeholder="Ex : apport personnel, investisseur, caisse de depart"
             required
           />
-          <Input
+          <NumberInput
             id="capitalAmount"
             label="Montant (FCFA)"
-            type="number"
             min={0}
             value={form.amount === 0 ? '' : form.amount}
-            onChange={(e) => setForm({ ...form, amount: Number(e.target.value) || 0 })}
+            onValueChange={(amount) => setForm({ ...form, amount })}
             placeholder="Ex : 500000"
             required
           />

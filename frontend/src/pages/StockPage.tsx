@@ -7,6 +7,7 @@ import { db } from '@/db';
 import type { StockMovementType } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
@@ -330,13 +331,12 @@ export function StockPage() {
             />
           </div>
 
-          <Input
+          <NumberInput
             id="qty"
             label={type === 'ajustement' ? 'Nouvelle quantite réelle' : 'Quantite'}
-            type="number"
             min={0}
             value={quantity}
-            onChange={(e) => setQuantity(Number(e.target.value) || 0)}
+            onValueChange={setQuantity}
             placeholder="Ex : 10"
             required
           />

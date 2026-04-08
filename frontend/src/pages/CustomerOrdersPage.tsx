@@ -7,6 +7,7 @@ import { db } from '@/db';
 import type { CustomerOrder, CustomerOrderStatus, PaymentMethod } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
@@ -549,22 +550,20 @@ export function CustomerOrdersPage() {
                     placeholder="Rechercher un produit..."
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-20 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-center"
                     placeholder="Qté"
                     value={line.quantity}
-                    onChange={(e) => updateLine(i, 'quantity', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'quantity', value)}
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
                     placeholder="0"
                     value={line.unitPrice === 0 ? "" : line.unitPrice}
-                    onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'unitPrice', value)}
                     required
                   />
                   <button type="button" onClick={() => removeLine(i)} className="p-1 text-danger">
@@ -603,14 +602,13 @@ export function CustomerOrdersPage() {
                   ))}
                 </div>
               </div>
-              <Input
+              <NumberInput
                 id="deposit"
                 label="Acompte (optionnel)"
-                type="number"
                 min={0}
                 max={orderTotal}
                 value={deposit || ''}
-                onChange={(e) => setDeposit(Number(e.target.value) || 0)}
+                onValueChange={setDeposit}
                 placeholder="Ex : 5000"
               />
               {deposit > 0 && (

@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { generateId, generateSupplierOrderRef, nowISO, normalizeForSearch } from '@/lib/utils';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { NumberInput } from '@/components/ui/NumberInput';
 
 type StockFilter = 'all' | 'rupture' | 'low' | 'ok';
 
@@ -429,12 +430,11 @@ export function LowStockPage() {
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-text">Quantité</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
                 value={orderQty}
-                onChange={(e) => handleOrderQtyChange(Number(e.target.value) || 0)}
+                onValueChange={handleOrderQtyChange}
                 required
               />
             </div>
@@ -442,13 +442,12 @@ export function LowStockPage() {
               <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
               <div className="relative">
                 <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   step="any"
                   className="w-full pl-8 rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
                   value={totalAmount || ''}
-                  onChange={(e) => handleTotalAmountChange(Number(e.target.value) || 0)}
+                  onValueChange={handleTotalAmountChange}
                   placeholder="0"
                   required
                 />

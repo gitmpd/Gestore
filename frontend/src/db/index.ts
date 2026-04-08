@@ -135,6 +135,55 @@ class StoreDB extends Dexie {
 
 export const db = new StoreDB();
 
+const SYNC_PENDING_EVENT = 'gestionstore:pending-change';
+const AUTO_SYNC_TABLES = [
+  'categories',
+  'products',
+  'customers',
+  'suppliers',
+  'sales',
+  'saleItems',
+  'supplierOrders',
+  'orderItems',
+  'stockMovements',
+  'creditTransactions',
+  'auditLogs',
+  'expenses',
+  'capitalEntries',
+  'customerOrders',
+  'customerOrderItems',
+  'priceHistory',
+  'supplierCreditTransactions',
+] as const;
+
+type AutoSyncTable = (typeof AUTO_SYNC_TABLES)[number];
+
+function emitSyncPendingEvent() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(SYNC_PENDING_EVENT));
+}
+
+function registerAutoSyncHooks(database: StoreDB) {
+  for (const tableName of AUTO_SYNC_TABLES) {
+    const table = database[tableName as AutoSyncTable] as EntityTable<{ id: string; syncStatus?: string }, 'id'>;
+
+    table.hook('creating', (_primKey, obj) => {
+      if (obj?.syncStatus === 'pending') emitSyncPendingEvent();
+    });
+
+    table.hook('updating', (modifications) => {
+      const patch = modifications as { syncStatus?: string };
+      if (patch.syncStatus === 'pending') emitSyncPendingEvent();
+    });
+  }
+
+  database.syncDeletions.hook('creating', () => {
+    emitSyncPendingEvent();
+  });
+}
+
+registerAutoSyncHooks(db);
+
 db.open().catch(async (err) => {
   console.error('DB open failed, deleting and retrying:', err);
   await Dexie.delete('GestionStoreDB');

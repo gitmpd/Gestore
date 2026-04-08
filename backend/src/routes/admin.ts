@@ -19,31 +19,38 @@ router.delete('/reset-database', async (_req, res) => {
     }
 
     // Ordre important pour respecter les contraintes de relations.
-    await prisma.customerOrderItem.deleteMany();
-    await prisma.customerOrder.deleteMany();
-    await prisma.creditTransaction.deleteMany();
-    await prisma.stockMovement.deleteMany();
-    await prisma.orderItem.deleteMany();
-    await prisma.supplierOrder.deleteMany();
-    await prisma.saleItem.deleteMany();
-    await prisma.sale.deleteMany();
-    await prisma.priceHistory.deleteMany();
-    await prisma.expense.deleteMany();
-    await prisma.auditLog.deleteMany();
-    await prisma.product.deleteMany();
-    await prisma.category.deleteMany();
-    await prisma.customer.deleteMany();
-    await prisma.supplier.deleteMany();
-    await prisma.user.deleteMany({
-      where: {
-        email: { not: 'admin@store.com' },
-      },
+    // On utilise une transaction pour éviter un reset partiel en cas d'erreur.
+    await prisma.$transaction(async (tx) => {
+      await tx.customerOrderItem.deleteMany();
+      await tx.customerOrder.deleteMany();
+      await tx.creditTransaction.deleteMany();
+      await tx.stockMovement.deleteMany();
+      await tx.orderItem.deleteMany();
+      await tx.supplierOrder.deleteMany();
+      await tx.saleItem.deleteMany();
+      await tx.sale.deleteMany();
+      await tx.priceHistory.deleteMany();
+      await tx.supplierCreditTransaction.deleteMany();
+      await tx.capitalEntry.deleteMany();
+      await tx.expense.deleteMany();
+      await tx.auditLog.deleteMany();
+      await tx.product.deleteMany();
+      await tx.category.deleteMany();
+      await tx.customer.deleteMany();
+      await tx.supplier.deleteMany();
+      await tx.syncDeletion.deleteMany();
+      await tx.user.deleteMany({
+        where: {
+          email: { not: 'admin@store.com' },
+        },
+      });
     });
 
     res.json({ success: true });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Erreur reset DB' });
+    const detail = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: 'Erreur reset DB', detail });
   }
 });
 

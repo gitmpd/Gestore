@@ -25,7 +25,7 @@ import type { ExpenseCategory } from '@/types';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
-type Period = 'today' | '7d' | '30d' | '90d' | 'all';
+type Period = 'today' | 'week' | 'last_week' | 'month' | 'last_month' | '90d' | 'all';
 type MetricDetailKey =
   | 'revenue'
   | 'grossProfit'
@@ -33,17 +33,6 @@ type MetricDetailKey =
   | 'net'
   | 'customerCredits'
   | 'supplierCredits';
-
-function getStartDate(period: Period): Date {
-  const d = new Date();
-  if (period === 'today') d.setHours(0, 0, 0, 0);
-  else if (period === '7d') d.setDate(d.getDate() - 7);
-  else if (period === '30d') d.setDate(d.getDate() - 30);
-  else if (period === '90d') d.setDate(d.getDate() - 90);
-  else d.setTime(0);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
 
 function startOfDay(date: Date): Date {
   const d = new Date(date);
@@ -63,6 +52,56 @@ function addDays(date: Date, days: number): Date {
   return d;
 }
 
+function toLocalDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseDateInput(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function getWeekStart(date: Date): Date {
+  const day = date.getDay();
+  const offset = (day + 6) % 7; // Monday as week start
+  return addDays(startOfDay(date), -offset);
+}
+
+function getPeriodRange(period: Period): { start: Date; end: Date } | null {
+  const today = startOfDay(new Date());
+
+  if (period === 'all') return null;
+  if (period === 'today') return { start: today, end: endOfDay(today) };
+
+  if (period === 'week') {
+    return { start: getWeekStart(today), end: endOfDay(today) };
+  }
+
+  if (period === 'last_week') {
+    const currentWeekStart = getWeekStart(today);
+    const start = addDays(currentWeekStart, -7);
+    const end = endOfDay(addDays(currentWeekStart, -1));
+    return { start, end };
+  }
+
+  if (period === 'month') {
+    const start = startOfDay(new Date(today.getFullYear(), today.getMonth(), 1));
+    return { start, end: endOfDay(today) };
+  }
+
+  if (period === 'last_month') {
+    const start = startOfDay(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+    const end = endOfDay(new Date(today.getFullYear(), today.getMonth(), 0));
+    return { start, end };
+  }
+
+  const start = addDays(today, -89);
+  return { start, end: endOfDay(today) };
+}
+
 function formatPercentChange(value: number): string {
   const rounded = Math.round(value * 10) / 10;
   const sign = rounded > 0 ? '+' : '';
@@ -71,8 +110,10 @@ function formatPercentChange(value: number): string {
 
 const periodOptions: Array<{ key: Period; label: string }> = [
   { key: 'today', label: "Aujourd'hui" },
-  { key: '7d', label: '7 jours' },
-  { key: '30d', label: '30 jours' },
+  { key: 'week', label: 'Cette semaine' },
+  { key: 'last_week', label: 'Semaine dernière' },
+  { key: 'month', label: 'Ce mois' },
+  { key: 'last_month', label: 'Mois dernier' },
   { key: '90d', label: '90 jours' },
   { key: 'all', label: 'Tout' },
 ];
@@ -120,7 +161,7 @@ function CurrencyValue({
 
 export function ReportsPage() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState<Period>('30d');
+  const [period, setPeriod] = useState<Period>('month');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [detailModalKey, setDetailModalKey] = useState<MetricDetailKey | null>(null);
@@ -143,28 +184,34 @@ export function ReportsPage() {
     [categories]
   );
 
-  const startDate = useMemo(() => getStartDate(period), [period]);
+  const periodRange = useMemo(() => getPeriodRange(period), [period]);
   const inSelectedRange = (isoDate: string) => {
-    const hasExplicitRange = Boolean(dateFrom || dateTo);
-    if (!hasExplicitRange && period !== 'all' && new Date(isoDate) < startDate) return false;
-    if (dateFrom && isoDate < dateFrom) return false;
-    if (dateTo && isoDate > dateTo + 'T23:59:59') return false;
+    const dayKey = isoDate.slice(0, 10);
+    if (dateFrom && dayKey < dateFrom) return false;
+    if (dateTo && dayKey > dateTo) return false;
+
+    if (!dateFrom && !dateTo && periodRange) {
+      const periodStart = toLocalDateKey(periodRange.start);
+      const periodEnd = toLocalDateKey(periodRange.end);
+      if (dayKey < periodStart || dayKey > periodEnd) return false;
+    }
+
     return true;
   };
 
   const filteredSales = useMemo(
     () => sales.filter((s) => inSelectedRange(s.date) && s.status === 'completed' && !s.deleted),
-    [sales, startDate, dateFrom, dateTo]
+    [sales, period, dateFrom, dateTo]
   );
 
   const filteredExpenses = useMemo(
     () => allExpenses.filter((e) => !e.deleted && inSelectedRange(e.date)),
-    [allExpenses, startDate, dateFrom, dateTo]
+    [allExpenses, period, dateFrom, dateTo]
   );
 
   const filteredCapitalEntries = useMemo(
     () => capitalEntries.filter((entry) => !entry.deleted && inSelectedRange(entry.date)),
-    [capitalEntries, startDate, dateFrom, dateTo]
+    [capitalEntries, period, dateFrom, dateTo]
   );
 
   const saleById = useMemo(
@@ -207,7 +254,7 @@ export function ReportsPage() {
           return { date: o.date, amount: 0 };
         })
         .filter((entry) => entry.amount > 0),
-    [customerOrders, startDate, dateFrom, dateTo, saleById]
+    [customerOrders, period, dateFrom, dateTo, saleById]
   );
 
   const totalSalesRevenue = useMemo(
@@ -228,7 +275,7 @@ export function ReportsPage() {
       customerCreditTransactions.filter(
         (t) => !t.deleted && t.type === 'payment' && inSelectedRange(t.date)
       ),
-    [customerCreditTransactions, startDate, dateFrom, dateTo]
+    [customerCreditTransactions, period, dateFrom, dateTo]
   );
 
   const filteredCustomerCredits = useMemo(
@@ -236,7 +283,7 @@ export function ReportsPage() {
       customerCreditTransactions.filter(
         (t) => !t.deleted && t.type === 'credit' && inSelectedRange(t.date)
       ),
-    [customerCreditTransactions, startDate, dateFrom, dateTo]
+    [customerCreditTransactions, period, dateFrom, dateTo]
   );
 
   const totalCustomerCreditPayments = useMemo(
@@ -288,7 +335,7 @@ export function ReportsPage() {
       supplierCreditTransactions.filter(
         (t) => !t.deleted && t.type === 'payment' && inSelectedRange(t.date)
       ),
-    [supplierCreditTransactions, startDate, dateFrom, dateTo]
+    [supplierCreditTransactions, period, dateFrom, dateTo]
   );
 
   const filteredSupplierCredits = useMemo(
@@ -296,7 +343,7 @@ export function ReportsPage() {
       supplierCreditTransactions.filter(
         (t) => !t.deleted && t.type === 'credit' && inSelectedRange(t.date)
       ),
-    [supplierCreditTransactions, startDate, dateFrom, dateTo]
+    [supplierCreditTransactions, period, dateFrom, dateTo]
   );
 
   const supplierCreditNetById = useMemo(() => {
@@ -353,8 +400,10 @@ export function ReportsPage() {
 
     const labels: Record<Period, string> = {
       today: "Aujourd'hui",
-      '7d': 'Les 7 derniers jours',
-      '30d': 'Les 30 derniers jours',
+      week: 'Cette semaine',
+      last_week: 'Semaine dernière',
+      month: 'Ce mois',
+      last_month: 'Mois dernier',
       '90d': 'Les 90 derniers jours',
       all: 'Toute la periode',
     };
@@ -374,8 +423,8 @@ export function ReportsPage() {
 
   const comparisonRange = useMemo(() => {
     if (dateFrom && dateTo) {
-      const currentStart = startOfDay(new Date(dateFrom));
-      const currentEnd = endOfDay(new Date(dateTo));
+      const currentStart = startOfDay(parseDateInput(dateFrom));
+      const currentEnd = endOfDay(parseDateInput(dateTo));
       const durationDays = Math.max(1, Math.round((currentEnd.getTime() - currentStart.getTime()) / 86400000) + 1);
       const previousEnd = endOfDay(addDays(currentStart, -1));
       const previousStart = startOfDay(addDays(currentStart, -durationDays));
@@ -386,8 +435,12 @@ export function ReportsPage() {
       return null;
     }
 
-    const currentEnd = endOfDay(new Date());
-    const currentStart = startOfDay(getStartDate(period));
+    const currentRange = getPeriodRange(period);
+    if (!currentRange) {
+      return null;
+    }
+    const currentEnd = currentRange.end;
+    const currentStart = currentRange.start;
     const durationDays = Math.max(1, Math.round((currentEnd.getTime() - currentStart.getTime()) / 86400000) + 1);
     const previousEnd = endOfDay(addDays(currentStart, -1));
     const previousStart = startOfDay(addDays(currentStart, -durationDays));
@@ -698,12 +751,12 @@ export function ReportsPage() {
     const data = entry.payload;
 
     return (
-      <div className="bg-surface border border-border rounded-lg shadow-lg p-3 text-sm min-w-[180px]">
-        <p className="font-semibold mb-2">{label}</p>
+      <div className="bg-surface border border-border rounded-lg shadow-lg p-3 text-sm text-text min-w-[190px]">
+        <p className="font-semibold mb-2 text-text">{label}</p>
 
         {activeBar === 'ventes' && (
           <>
-            <p className="text-xs text-blue-600 font-semibold mb-1">
+            <p className="text-xs text-blue-600 dark:text-blue-400 font-semibold mb-1">
               Entrées de trésorerie
             </p>
 
@@ -728,9 +781,9 @@ export function ReportsPage() {
                 <span>{formatCurrency(data.capital)}</span>
               </div>
 
-              <div className="flex justify-between font-bold border-t pt-1 mt-1">
+              <div className="flex justify-between font-bold border-t border-border pt-1 mt-1">
                 <span>Total:</span>
-                <span className="text-blue-600">
+                <span className="text-blue-600 dark:text-blue-400">
                   {formatCurrency(data.ventes)}
                 </span>
               </div>
@@ -740,7 +793,7 @@ export function ReportsPage() {
 
         {activeBar === 'depenses' && (
           <>
-            <p className="text-xs text-red-600 font-semibold mb-1">
+            <p className="text-xs text-red-600 dark:text-red-400 font-semibold mb-1">
               Sorties de trésorerie
             </p>
 
@@ -755,9 +808,9 @@ export function ReportsPage() {
                 <span>{formatCurrency(data.paiementsFournisseurs)}</span>
               </div>
 
-              <div className="flex justify-between font-bold border-t pt-1 mt-1">
+              <div className="flex justify-between font-bold border-t border-border pt-1 mt-1">
                 <span>Total:</span>
-                <span className="text-red-600">
+                <span className="text-red-600 dark:text-red-400">
                   {formatCurrency(data.depenses)}
                 </span>
               </div>

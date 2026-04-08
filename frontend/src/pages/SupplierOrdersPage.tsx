@@ -6,7 +6,7 @@ import { Plus, Search, Trash2, PackageCheck, XCircle, Eye, ArrowLeft } from 'luc
 import { db } from '@/db';
 import type { OrderStatus, SupplierOrder } from '@/types';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input'; // pour le depot
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
@@ -532,22 +532,20 @@ export function SupplierOrdersPage() {
                     placeholder="Rechercher un produit..."
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-20 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-center"
                     placeholder="Qte"
                     value={line.quantity}
-                    onChange={(e) => updateLine(i, 'quantity', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'quantity', value)}
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
                     placeholder="Prix"
                     value={line.unitPrice === 0 ? "" : line.unitPrice}
-                    onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'unitPrice', value)}
                     required
                   />
                   <button type="button" onClick={() => removeLine(i)} className="p-1 text-danger">
@@ -709,14 +707,13 @@ export function SupplierOrdersPage() {
             </div>
 
             {paymentMode === 'partial' && (
-              <Input
+              <NumberInput
                 id="deposit"
                 label="Montant payé (acompte)"
-                type="number"
                 min={0}
                 max={receiveOrderData.total}
                 value={deposit || ''}
-                onChange={(e) => setDeposit(Number(e.target.value) || 0)}
+                onValueChange={setDeposit}
                 placeholder="Ex : 50000"
                 required
               />

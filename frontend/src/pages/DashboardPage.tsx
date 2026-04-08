@@ -54,7 +54,7 @@ function StatCard({
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-4 w-full text-left rounded-xl border border-border bg-surface p-5 shadow-sm
+      className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4 w-full text-left rounded-xl border border-border bg-surface p-3 sm:p-5 shadow-sm
         transition-all duration-200 ease-out
         hover:shadow-lg hover:-translate-y-1 hover:border-primary/30
         active:translate-y-0 active:shadow-md
@@ -65,12 +65,12 @@ function StatCard({
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-xs uppercase tracking-wide text-text-muted">{label}</p>
-        <p className="text-xl sm:text-2xl font-bold text-text leading-tight whitespace-normal">{value}</p>
+        <p className="text-lg sm:text-2xl font-bold text-text leading-tight whitespace-normal">{value}</p>
         {hint ? <p className="text-xs text-text-muted mt-1">{hint}</p> : null}
       </div>
       <ChevronRight
         size={18}
-        className="text-text-muted opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0"
+        className="hidden sm:block text-text-muted opacity-0 -translate-x-2 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0"
       />
     </button>
   );
@@ -90,7 +90,7 @@ function QuickActionCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-xl border border-border bg-surface p-4 text-left hover:shadow-md hover:border-primary/30 transition-all duration-200 group"
+      className="rounded-xl border border-border bg-surface p-3 sm:p-4 text-left hover:shadow-md hover:border-primary/30 transition-all duration-200 group"
     >
       <div className="flex items-center justify-between gap-2">
         <div className="p-2 rounded-lg bg-primary/10 text-primary">
@@ -168,7 +168,7 @@ export function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         {isGerant ? (
           <>
             <QuickActionCard
@@ -232,7 +232,7 @@ export function DashboardPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-4">
         <StatCard
           icon={TrendingUp}
           label="Ventes du jour"

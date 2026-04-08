@@ -8,6 +8,7 @@ import type { Product, ProductUsage } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
@@ -490,14 +491,21 @@ export function ProductsPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              const rows = products.map((p) => [
-                p.name,
-                categories.find((c) => c.id === p.categoryId)?.name ?? '-',
-                formatCurrency(p.sellPrice),
-                p.quantity,
-                p.alertThreshold,
-              ]);
-              exportCSV('produits', ['Nom', 'Categorie', 'Prix vente', 'Stock', 'Seuil alerte'], rows);
+              const headers = ['Nom', 'Categorie'];
+              const rows = products.map((p) => {
+                const row = [
+                  p.name,
+                  categories.find((c) => c.id === p.categoryId)?.name ?? '-',
+                ];
+                if (isGerant) {
+                  headers.push('Prix achat');
+                  row.push(formatCurrency(p.buyPrice));
+                }
+                headers.push('Prix vente', 'Stock', 'Seuil alerte');
+                row.push(formatCurrency(p.sellPrice), p.quantity.toString(), p.alertThreshold.toString());
+                return row;
+              });
+              exportCSV('produits', headers, rows);
               toast.success('Export CSV telecharge');
             }}
             disabled={products.length === 0}
@@ -599,6 +607,7 @@ export function ProductsPage() {
               <Th>Produit</Th>
               <Th>Categorie</Th>
               <Th>Usage</Th>
+              {isGerant && <Th>Prix achat</Th>}
               <Th>Prix vente</Th>
               <Th>Stock</Th>
               <Th>Statut</Th>
@@ -609,7 +618,7 @@ export function ProductsPage() {
           <Tbody>
             {products.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 8 : 7} className="text-center text-text-muted py-8">
+                <Td colSpan={isGerant ? 9 : 8} className="text-center text-text-muted py-8">
                   Aucun produit trouve
                 </Td>
               </Tr>
@@ -644,6 +653,7 @@ export function ProductsPage() {
                     </Badge>
                   </Td>
 
+                  {isGerant && <Td>{formatCurrency(p.buyPrice)}</Td>}
                   <Td>{formatCurrency(p.sellPrice)}</Td>
                   <Td className="font-semibold">{p.quantity}</Td>
 
@@ -700,18 +710,13 @@ export function ProductsPage() {
               required
             />
 
-            <Input
+            <NumberInput
               id="sellPrice"
               label="Prix de vente (optionnel)"
-              type="number"
               min={0}
               value={form.sellPrice ?? ''}
-              onChange={(e) =>
-                setForm({
-                  ...form,
-                  sellPrice: e.target.value === '' ? undefined : Number(e.target.value),
-                })
-              }
+              onValueChange={(sellPrice) => setForm({ ...form, sellPrice })}
+              onEmptyValueChange={() => setForm({ ...form, sellPrice: undefined })}
               placeholder="Ex : 3500"
             />
           </div>
@@ -797,13 +802,12 @@ export function ProductsPage() {
                   ))}
                 </div>
               </div>
-              <Input
+              <NumberInput
                 id="alertThreshold"
                 label="Seuil d'alerte"
-                type="number"
                 min={0}
                 value={form.alertThreshold}
-                onChange={(e) => setForm({ ...form, alertThreshold: Number(e.target.value) })}
+                onValueChange={(alertThreshold) => setForm({ ...form, alertThreshold })}
                 placeholder="Ex : 5"
                 required
               />
@@ -900,12 +904,11 @@ export function ProductsPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-text">Quantite</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
                 value={orderQty}
-                onChange={(e) => handleOrderQtyChange(Number(e.target.value) || 0)}
+                onValueChange={handleOrderQtyChange}
                 required
               />
             </div>
@@ -913,15 +916,14 @@ export function ProductsPage() {
               <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
               <div className="relative">
                 <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   step="any"
                   className={`w-full pl-8 rounded-lg border bg-surface text-text px-3 py-2 text-sm ${
                     amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
                   }`}
                   value={totalAmount || ''}
-                  onChange={(e) => handleTotalAmountChange(Number(e.target.value) || 0)}
+                  onValueChange={handleTotalAmountChange}
                   placeholder="0"
                 />
               </div>
@@ -930,15 +932,14 @@ export function ProductsPage() {
               <label className="text-sm font-medium text-text">Prix unitaire (FCFA)</label>
               <div className="relative">
                 <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   step="any"
                   className={`w-full pl-8 rounded-lg border bg-surface text-text px-3 py-2 text-sm ${
                     amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
                   }`}
                   value={unitPrice || ''}
-                  onChange={(e) => handleUnitPriceChange(Number(e.target.value) || 0)}
+                  onValueChange={handleUnitPriceChange}
                   placeholder="0"
                 />
               </div>

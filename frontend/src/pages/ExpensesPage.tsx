@@ -7,6 +7,7 @@ import { db } from '@/db';
 import type { Expense, ExpenseCategory } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Card, CardTitle } from '@/components/ui/Card';
@@ -454,13 +455,12 @@ export function ExpensesPage() {
               ))}
             </select>
           </div>
-          <Input
+          <NumberInput
             id="expAmount"
             label="Montant (FCFA)"
-            type="number"
             min={0}
             value={form.amount}
-            onChange={(e) => setForm({ ...form, amount: Number(e.target.value) })}
+            onValueChange={(amount) => setForm({ ...form, amount })}
             placeholder="Ex : 15000"
             required
           />

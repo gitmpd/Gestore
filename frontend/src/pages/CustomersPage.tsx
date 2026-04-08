@@ -8,6 +8,7 @@ import type { Customer } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
@@ -351,13 +352,12 @@ export function CustomersPage() {
             </button>
           </div>
 
-          <Input
+          <NumberInput
             id="creditAmt"
             label="Montant"
-            type="number"
             min={0}
             value={creditAmount === 0 ? "" : creditAmount}
-            onChange={(e) => setCreditAmount(Number(e.target.value))}
+            onValueChange={setCreditAmount}
             placeholder="Ex : 5000"
             required
           />

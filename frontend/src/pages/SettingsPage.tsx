@@ -37,7 +37,7 @@ import { getStoredShopName, saveShopName } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { discoverServers, type DiscoveredServer } from '@/services/discoveryService';
-import { syncAll } from '@/services/syncService';
+import { resetSyncCursors, syncAll } from '@/services/syncService';
 
 export function SettingsPage() {
   const navigate = useNavigate();
@@ -119,7 +119,12 @@ export function SettingsPage() {
 
   const handleSaveServer = (e: FormEvent) => {
     e.preventDefault();
-    localStorage.setItem('sync_server_url', serverUrl);
+    const previous = (localStorage.getItem('sync_server_url') || '').trim();
+    const next = serverUrl.trim();
+    if (previous !== next) {
+      resetSyncCursors();
+    }
+    localStorage.setItem('sync_server_url', next);
     setSyncModalOpen(false);
   };
 
@@ -628,7 +633,7 @@ export function SettingsPage() {
                 setSeeding(true);
                 try {
                   await seedTestData(currentUser.id);
-                  toast.success('Catalogue de test chargé : catégories et produits uniquement.');
+                  toast.success('Catalogue de test chargé.');
                 } catch (err) {
                   toast.error('Erreur : ' + (err as Error).message);
                 } finally {
