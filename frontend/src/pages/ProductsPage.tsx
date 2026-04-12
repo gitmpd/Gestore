@@ -67,7 +67,7 @@ const emptyProduct = (): Partial<Product> => ({
   usage: 'achat_vente',
 });
 
-const FALLBACK_SUPPLIER_NAME = 'Fournisseur non renseigne';
+const FALLBACK_SUPPLIER_NAME = '';
 
 export function ProductsPage() {
   const navigate = useNavigate();
@@ -919,7 +919,7 @@ export function ProductsPage() {
                 <NumberInput
                   min={0}
                   step="any"
-                  className={`w-full pl-8 rounded-lg border bg-surface text-text px-3 py-2 text-sm ${
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
                     amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
                   }`}
                   value={totalAmount || ''}
@@ -935,7 +935,7 @@ export function ProductsPage() {
                 <NumberInput
                   min={0}
                   step="any"
-                  className={`w-full pl-8 rounded-lg border bg-surface text-text px-3 py-2 text-sm ${
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
                     amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
                   }`}
                   value={unitPrice || ''}
@@ -945,7 +945,7 @@ export function ProductsPage() {
               </div>
             </div>
           </div>
-<p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
+          <p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
           {orderQty > 0 && totalAmount > 0 && unitPrice > 0 && (
             <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
               <div className="flex items-center justify-between">
