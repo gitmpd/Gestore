@@ -535,7 +535,7 @@ export function ReportsPage() {
     const buildChange = (current: number, previous: number) => {
       if (previous === 0) {
         if (current === 0) return 'Stable';
-        return 'Nouvelle valeur';
+        return '';
       }
       return formatPercentChange(((current - previous) / previous) * 100);
     };

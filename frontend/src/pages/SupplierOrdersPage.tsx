@@ -342,6 +342,39 @@ export function SupplierOrdersPage() {
     await trackDeletion('supplierOrders', order.id);
 
     const items = await db.orderItems.where('orderId').equals(order.id).toArray();
+
+    // Si la commande a été reçue, annuler les effets sur le stock
+    if (order.status === 'recue') {
+      await Promise.all(
+        items.map(async (item) => {
+          const product = await db.products.get(item.productId);
+          if (!product) return;
+
+          // Diminuer la quantité du produit
+          await db.products.update(item.productId, {
+            quantity: Math.max(0, product.quantity - item.quantity), // Ne pas aller en négatif
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+
+          // Ajouter un mouvement de stock de sortie pour annuler l'entrée
+          await db.stockMovements.add({
+            id: generateId(),
+            productId: item.productId,
+            productName: item.productName,
+            type: 'sortie',
+            quantity: item.quantity,
+            date: now,
+            reason: `Annulation commande fournisseur #${order.id.slice(0, 8)}`,
+            userId: user?.id,
+            createdAt: now,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        })
+      );
+    }
+
     await Promise.all(
       items.map(async (item) => {
         await db.orderItems.update(item.id, {

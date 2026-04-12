@@ -321,47 +321,6 @@ export function ProductsPage() {
     toast.success(editing ? 'Produit modifie' : 'Produit ajoute');
   };
 
-  const handleDelete = async (id: string) => {
-    const product = await db.products.get(id);
-    if (!product) return;
-  
-    const ok = await confirmAction({
-      title: 'Supprimer le produit',
-      message: `Supprimer le produit "${product.name}" ?\n\nCette action supprimera aussi ses mouvements de stock associés.`,
-      confirmLabel: 'Supprimer',
-      variant: 'danger',
-    });
-    if (!ok) return;
-  
-    // Afficher un toast de chargement
-    const loadingToast = toast.loading('Suppression en cours...');
-  
-    try {
-      const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
-      const now = nowISO();
-  
-      // Utiliser une transaction pour optimiser
-      await db.transaction('rw', [db.products, db.stockMovements], async () => {
-        await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-        
-        for (const mId of movementIds) {
-          await db.stockMovements.update(mId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-          await trackDeletion('stockMovements', mId as string);
-        }
-      });
-  
-      await trackDeletion('products', id);
-      await logAction({ action: 'suppression', entity: 'produit', entityId: id, entityName: product.name });
-  
-      // Fermer le toast de chargement et afficher le succès
-      toast.dismiss(loadingToast);
-      toast.success('Produit supprimé');
-    } catch (error) {
-      toast.dismiss(loadingToast);
-      toast.error('Erreur lors de la suppression');
-    }
-  };
-
   const handleCreateSupplierOrder = async (e: FormEvent) => {
     e.preventDefault();
     if (!selectedProduct || orderQty <= 0 || totalAmount <= 0) {
@@ -538,6 +497,7 @@ export function ProductsPage() {
                   await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
                   const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
                   for (const mId of movementIds) {
+                    await db.stockMovements.where('id').equals(mId).modify({ deleted: true, updatedAt: now, syncStatus: 'pending' });
                     await trackDeletion('stockMovements', mId as string);
                   }
                   await trackDeletion('products', id);
@@ -671,11 +631,6 @@ export function ProductsPage() {
                       <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700">
                         <Pencil size={16} className="text-text-muted" />
                       </button>
-                      {isGerant && (
-                        <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30">
-                          <Trash2 size={16} className="text-danger" />
-                        </button>
-                      )}
                     </div>
                   </Td>
                 </Tr>
