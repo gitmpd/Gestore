@@ -105,6 +105,7 @@ export interface SupplierOrder extends SyncFields {
   paymentMethod?: PaymentMethod;
   isCredit?: boolean;
   userId?: string;
+  deleted?: boolean;
 }
 
 export interface OrderItem extends SyncFields {
@@ -115,6 +116,7 @@ export interface OrderItem extends SyncFields {
   quantity: number;
   unitPrice: number;
   total: number;
+  deleted?: boolean;
 }
 
 export interface StockMovement extends SyncFields {

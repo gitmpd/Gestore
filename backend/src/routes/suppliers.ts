@@ -119,7 +119,7 @@ router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
             productName: item.productName,
             type: 'entree',
             quantity: item.quantity,
-            reason: `Reception commande #${order.id.slice(0, 8)}`,
+            reason: `Reception commande #${order.id}`,
             userId: req.userId ?? null,
           },
         });
@@ -142,7 +142,7 @@ router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
             orderId: order.id,
             amount: amountPaid,
             type: 'payment',
-            note: `Commande #${order.id.slice(0, 8)} - ${amountPaid === order.total ? 'Paiement total' : 'Paiement partiel'}`,
+            note: `Commande #${order.id} - ${amountPaid === order.total ? 'Paiement total' : 'Paiement partiel'}`,
           },
         });
       }
@@ -159,7 +159,7 @@ router.post('/orders/:orderId/receive', async (req: AuthRequest, res) => {
             orderId: order.id,
             amount: remaining,
             type: 'credit',
-            note: `Commande #${order.id.slice(0, 8)} - ${amountPaid > 0 ? 'Reste après acompte' : 'Credit fournisseur'}`,
+            note: `Commande #${order} - ${amountPaid > 0 ? 'Reste après acompte' : 'Credit fournisseur'}`,
           },
         });
       }

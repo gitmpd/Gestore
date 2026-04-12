@@ -14,6 +14,7 @@ import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
 import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
+import { trackDeletion } from '@/services/syncService';
 import { confirmAction } from '@/stores/confirmStore';
 
 const statusLabels: Record<OrderStatus, string> = {
@@ -69,7 +70,7 @@ export function SupplierOrdersPage() {
   const userMap = new Map(allUsers.map((u) => [u.id, u.name]));
 
   const orders = useLiveQuery(async () => {
-    const all = await db.supplierOrders.orderBy('date').reverse().toArray();
+    const all = (await db.supplierOrders.orderBy('date').reverse().toArray()).filter((o) => !o.deleted);
     const supplierMap = new Map((await db.suppliers.toArray()).map((s) => [s.id, s.name]));
     return all.map((o) => ({ ...o, supplierName: supplierMap.get(o.supplierId) || '—' }));
   }) ?? [];
@@ -319,8 +320,61 @@ export function SupplierOrdersPage() {
       entity: 'commande',
       entityId: order.id,
       entityName: order.supplierName,
+      details: `Commande #${order.id} - ${formatCurrency(order.total)}`,
+    });
+  };
+
+  const handleDelete = async (order: SupplierOrder & { supplierName: string }) => {
+    const ok = await confirmAction({
+      title: 'Supprimer la commande',
+      message: `Supprimer la commande #${order.id.slice(0, 8)} ?`,
+      confirmLabel: 'Supprimer',
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    const now = nowISO();
+    await db.supplierOrders.update(order.id, {
+      deleted: true,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+    await trackDeletion('supplierOrders', order.id);
+
+    const items = await db.orderItems.where('orderId').equals(order.id).toArray();
+    await Promise.all(
+      items.map(async (item) => {
+        await db.orderItems.update(item.id, {
+          deleted: true,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+        await trackDeletion('orderItems', item.id);
+      })
+    );
+
+    // Supprimer les transactions de crédit fournisseur associées
+    const relatedTransactions = await db.supplierCreditTransactions.where('orderId').equals(order.id).toArray();
+    await Promise.all(
+      relatedTransactions.map(async (tx) => {
+        await db.supplierCreditTransactions.update(tx.id, {
+          deleted: true,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+        await trackDeletion('supplierCreditTransactions', tx.id);
+      })
+    );
+
+    await logAction({
+      action: 'suppression',
+      entity: 'commande',
+      entityId: order.id,
+      entityName: order.supplierName,
       details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)}`,
     });
+
+    toast.success('Commande fournisseur supprimée');
   };
 
   const openDetail = async (order: SupplierOrder & { supplierName: string }) => {
@@ -479,6 +533,13 @@ export function SupplierOrdersPage() {
                           </button>
                         </>
                       )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDelete(o); }}
+                        className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
+                        title="Supprimer"
+                      >
+                        <Trash2 size={16} className="text-danger" />
+                      </button>
                     </div>
                   </Td>
                 </Tr>
