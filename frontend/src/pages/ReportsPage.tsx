@@ -32,7 +32,8 @@ type MetricDetailKey =
   | 'expenses'
   | 'net'
   | 'customerCredits'
-  | 'supplierCredits';
+  | 'supplierCredits'
+  | 'cashBalance';
 
 function startOfDay(date: Date): Date {
   const d = new Date(date);
@@ -362,6 +363,43 @@ export function ReportsPage() {
   const totalExpenses = totalManualExpenses + totalSupplierPayments;
 
   const netProfitSimple = totalRevenue - totalExpenses;
+
+  // Récupérer la date de la première vente (la plus ancienne)
+const firstSaleDate = useMemo(() => {
+  const completedSales = sales.filter(s => s.status === 'completed' && !s.deleted);
+  if (completedSales.length === 0) return null;
+  const firstSale = completedSales.reduce((earliest, sale) => 
+    new Date(sale.date) < new Date(earliest.date) ? sale : earliest
+  );
+  return firstSale.date; // string ISO
+}, [sales]);
+
+// Calculer le capital initial = somme des achats effectués avant la première vente
+const initialCapital = useMemo(() => {
+  if (!firstSaleDate) return 0;
+
+  // 1. Dépenses manuelles (achats de produits) avant la première vente
+  const manualAchats = allExpenses
+    .filter(e => !e.deleted && e.date < firstSaleDate)
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  // 2. Paiements aux fournisseurs (commandes) avant la première vente
+  const supplierPaymentsBefore = supplierCreditTransactions
+    .filter(t => !t.deleted && t.type === 'payment' && t.date < firstSaleDate)
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  // 3. Éventuellement, les apports en capital spécifiques à l'achat initial
+  //    Si vous utilisez capitalEntries pour cela, vous pouvez les ajouter :
+  const capitalForAchats = capitalEntries
+    .filter(e => !e.deleted && e.date < firstSaleDate)
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  // Retourner la somme de tous ces achats initiaux
+  return manualAchats + supplierPaymentsBefore + capitalForAchats;
+}, [firstSaleDate, allExpenses, supplierCreditTransactions, capitalEntries]);
+
+  // Solde de caisse = résultat net + capital initial
+  const cashBalance = netProfitSimple + initialCapital;
 
   const customersWhoOwe = useMemo(
     () =>
@@ -903,7 +941,7 @@ export function ReportsPage() {
           </div>
         </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
           {reportSummary.map((item) => (
             <div key={item.label} className="rounded-xl border border-border bg-surface/80 px-3 py-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">{item.label}</p>
@@ -920,26 +958,46 @@ export function ReportsPage() {
           </div>
           {comparisonCards.length > 0 && (
             <span className="self-start rounded-full border border-border px-3 py-1 text-xs font-medium text-text-muted">
-              Compare a la periode precedente
+              Comparé a la periode précedente
             </span>
           )}
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-          {comparisonCards.length > 0 ? comparisonCards.map((item) => (
-            <div key={item.label} className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">{item.label}</p>
-              <p className={`mt-2 text-2xl font-bold ${item.tone}`}>
-                <CurrencyValue amount={item.value} />
-              </p>
-              <p className="mt-2 text-xs text-text-muted">
-                Periode precedente: {formatCurrency(item.previous)}
-              </p>
-              <p className={`mt-1 text-sm font-semibold ${item.change.startsWith('-') ? 'text-red-600' : 'text-emerald-600'}`}>
-                {item.change}
-              </p>
-            </div>
-          )) : (
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+          {/* Carte Solde de caisse - toujours affichée */}
+          <Card
+            className="cursor-pointer transition-colors hover:bg-teal-50/40"
+            onClick={() => setDetailModalKey('cashBalance')}
+          >
+            <p className="text-sm text-text-muted">Solde de caisse</p>
+            <p className={`text-xl sm:text-2xl font-bold mt-1 leading-tight whitespace-normal ${
+              cashBalance >= 0 ? 'text-teal-600' : 'text-red-600'
+            }`}>
+              <CurrencyValue amount={cashBalance} />
+            </p>
+            <p className="text-xs text-text-muted mt-1">
+              Capital de départ : {formatCurrency(initialCapital)}
+            </p>
+          </Card>
+
+          {/* En mode comparaison : afficher les 3 cartes de comparaison */}
+          {comparisonCards.length > 0 ? (
+            comparisonCards.map((item) => (
+              <div key={item.label} className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">{item.label}</p>
+                <p className={`mt-2 text-2xl font-bold ${item.tone}`}>
+                  <CurrencyValue amount={item.value} />
+                </p>
+                <p className="mt-2 text-xs text-text-muted">
+                  Periode precedente: {formatCurrency(item.previous)}
+                </p>
+                <p className={`mt-1 text-sm font-semibold ${item.change.startsWith('-') ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {item.change}
+                </p>
+              </div>
+            ))
+          ) : (
+            // En mode normal : afficher les 3 cartes classiques
             <>
               <div className="rounded-2xl border border-border bg-surface/90 p-4 shadow-sm">
                 <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Encaissements</p>
@@ -990,7 +1048,7 @@ export function ReportsPage() {
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-4">
         <Card
           className="cursor-pointer transition-colors hover:bg-primary/5"
           onClick={() => setDetailModalKey('revenue')}
@@ -1115,7 +1173,11 @@ export function ReportsPage() {
             ? 'Detail du resultat net'
             : detailModalKey === 'customerCredits'
             ? 'Detail des credits clients'
-            : 'Detail des credits fournisseurs'
+            : detailModalKey === 'supplierCredits'
+            ? 'Detail des credits fournisseurs'
+            : detailModalKey === 'cashBalance'
+            ? 'Detail du solde de caisse'
+            : ''
         }
       >
         {detailModalKey === 'revenue' && (
@@ -1172,7 +1234,19 @@ export function ReportsPage() {
             </Button>
           </div>
         )}
+        {detailModalKey === 'cashBalance' && (
+          <div className="space-y-2 text-sm">
+            <p className="font-semibold text-text">Solde de caisse : {formatCurrency(cashBalance)}</p>
+            <p className="text-text-muted">
+              Formule = Solde net ({formatCurrency(netProfitSimple)}) + Capital initial ({formatCurrency(initialCapital)})
+            </p>
+            <p className="text-text-muted">
+              Le capital initial est le premier apport en capital enregistré (achats avant la première vente).
+            </p>
+          </div>
+        )}
       </Modal>
+
       <Card>
         <CardTitle>Entrées/sorties d'argent par jour</CardTitle>
         {salesByDay.length === 0 ? (
@@ -1219,6 +1293,7 @@ export function ReportsPage() {
           </div>
         )}
       </Card>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6"> 
         {expensesByCategory.length > 0 && (
         <Card>
@@ -1377,4 +1452,3 @@ export function ReportsPage() {
     </div>
   );
 }
-
