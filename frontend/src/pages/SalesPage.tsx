@@ -2,9 +2,9 @@ import { useEffect, useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, UserPlus, CreditCard, CheckCircle2 } from 'lucide-react';
+import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, UserPlus, CreditCard, CheckCircle2, Calculator } from 'lucide-react';
 import { db } from '@/db';
-import type { Customer, PaymentMethod, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
+import type { Customer, PaymentMethod, Product, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { NumberInput } from '@/components/ui/NumberInput';
@@ -12,13 +12,13 @@ import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, generateReference, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
+import { generateId, generateReference, generateSupplierOrderRef, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
-import { customerSchema, validate } from '@/lib/validation';
+import { customerSchema, productSchema, validate } from '@/lib/validation';
 
 interface CartItem {
   productId: string;
@@ -26,6 +26,16 @@ interface CartItem {
   quantity: number;
   unitPrice: number;
   maxStock: number;
+}
+
+interface QuickProductForm {
+  name: string;
+  barcode: string;
+  categoryId: string;
+  buyPrice: number;
+  sellPrice: number;
+  quantity: number;
+  alertThreshold: number;
 }
 
 type QuickDateFilter = 'all' | 'today' | 'week' | 'last_week' | 'month' | 'last_month';
@@ -44,6 +54,18 @@ const emptyQuickCustomer = (): Pick<Customer, 'name' | 'phone'> => ({
   name: '',
   phone: '',
 });
+
+const emptyQuickProduct = (): QuickProductForm => ({
+  name: '',
+  barcode: '',
+  categoryId: '',
+  buyPrice: 0,
+  sellPrice: 0,
+  quantity: 0,
+  alertThreshold: 5,
+});
+
+const FALLBACK_SUPPLIER_NAME = '';
 
 function toLocalDateKey(date: Date): string {
   const y = date.getFullYear();
@@ -168,6 +190,20 @@ export function SalesPage() {
   const [quickCustomerErrors, setQuickCustomerErrors] = useState<Record<string, string>>({});
   const [quickCustomerOpen, setQuickCustomerOpen] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [quickProductModalOpen, setQuickProductModalOpen] = useState(false);
+  const [quickProductForm, setQuickProductForm] = useState<QuickProductForm>(emptyQuickProduct());
+  const [quickProductErrors, setQuickProductErrors] = useState<Record<string, string>>({});
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [methodModalOpen, setMethodModalOpen] = useState(false);
+  const [reorderModalOpen, setReorderModalOpen] = useState(false);
+  const [selectedStockProduct, setSelectedStockProduct] = useState<Product | null>(null);
+  const [supplierId, setSupplierId] = useState('');
+  const [orderQty, setOrderQty] = useState(1);
+  const [totalAmount, setTotalAmount] = useState(0);
+  const [unitPrice, setUnitPrice] = useState(0);
+  const [amountEntryMode, setAmountEntryMode] = useState<'total' | 'unit'>('total');
+  const [receiveNow, setReceiveNow] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
   const [productSearch, setProductSearch] = useState('');
   const [productDropdownOpen, setProductDropdownOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -189,7 +225,14 @@ export function SalesPage() {
   const [page, setPage] = useState(initialListState.page);
 
   const allProducts = useLiveQuery(() => db.products.orderBy('name').toArray()) ?? [];
-  const saleProducts = allProducts.filter((p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente');
+  const categories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
+  const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
+  const selectableSuppliers = suppliers.filter(
+    (s) => normalizeForSearch(s.name) !== normalizeForSearch(FALLBACK_SUPPLIER_NAME)
+  );
+  const saleProducts = allProducts.filter(
+    (p) => !p.deleted && (!p.usage || p.usage === 'vente' || p.usage === 'achat_vente')
+  );
   const productMap = useMemo(
     () => new Map(allProducts.map((product) => [product.id, product])),
     [allProducts]
@@ -310,6 +353,20 @@ export function SalesPage() {
     [selectedFilteredSales]
   );
 
+  const filteredSalesProfitTotal = useMemo(
+    () =>
+      completedSales.reduce((sum, sale) => {
+        const items = saleItemsMap.get(sale.id) ?? [];
+        const saleProfit = items.reduce((itemSum: number, item: SaleItemType) => {
+          const product = productMap.get(item.productId);
+          const buyPrice = product?.buyPrice ?? 0;
+          return itemSum + ((item.unitPrice - buyPrice) * item.quantity);
+        }, 0);
+        return sum + saleProfit;
+      }, 0),
+    [completedSales, saleItemsMap, productMap]
+  );
+
   const hasActiveFilters = Boolean(
     saleSearch || paymentFilter !== 'all' || statusFilter !== 'all' || dateFrom || dateTo
   );
@@ -363,13 +420,14 @@ export function SalesPage() {
     return Array.from({ length: end - start + 1 }, (_, index) => start + index);
   }, [currentPage, totalPages]);
 
+  const normalizedProductSearch = normalizeForSearch(productSearch);
   const filteredProducts = saleProducts.filter(
     (p) =>
-      p.quantity > 0 &&
-      normalizeForSearch(productSearch).length >= 2 &&
-      (normalizeForSearch(p.name).includes(normalizeForSearch(productSearch)) ||
+      normalizedProductSearch.length >= 2 &&
+      (normalizeForSearch(p.name).includes(normalizedProductSearch) ||
         (p.barcode && p.barcode.includes(productSearch)))
   );
+  const canCreateProductFromSearch = normalizedProductSearch.length >= 2 && filteredProducts.length === 0;
 
   const total = cart.reduce((s, item) => s + item.quantity * item.unitPrice, 0);
 
@@ -380,6 +438,97 @@ export function SalesPage() {
     setCreatingCustomer(false);
   };
 
+  const openQuickProductModal = () => {
+    if (categories.length === 0) {
+      toast.error('Ajoutez une categorie avant de creer un produit');
+      return;
+    }
+
+    setQuickProductErrors({});
+    setQuickProductForm({
+      ...emptyQuickProduct(),
+      name: productSearch.trim(),
+      categoryId: categories.length === 1 ? categories[0].id : '',
+    });
+    setProductDropdownOpen(false);
+    setQuickProductModalOpen(true);
+  };
+
+  const closeQuickProductModal = () => {
+    if (creatingProduct) return;
+    setQuickProductModalOpen(false);
+    setQuickProductErrors({});
+    setQuickProductForm(emptyQuickProduct());
+  };
+
+  const handleOrderQtyChange = (qty: number) => {
+    setOrderQty(qty);
+    if (qty <= 0) {
+      setTotalAmount(0);
+      setUnitPrice(0);
+      return;
+    }
+
+    if (amountEntryMode === 'total' && totalAmount > 0) {
+      setUnitPrice(totalAmount / qty);
+    }
+
+    if (amountEntryMode === 'unit' && unitPrice > 0) {
+      setTotalAmount(unitPrice * qty);
+    }
+  };
+
+  const handleTotalAmountChange = (amount: number) => {
+    setAmountEntryMode('total');
+    setTotalAmount(amount);
+    if (orderQty > 0 && amount > 0) {
+      setUnitPrice(amount / orderQty);
+    } else {
+      setUnitPrice(0);
+    }
+  };
+
+  const handleUnitPriceChange = (amount: number) => {
+    setAmountEntryMode('unit');
+    setUnitPrice(amount);
+    if (orderQty > 0 && amount > 0) {
+      setTotalAmount(amount * orderQty);
+    } else {
+      setTotalAmount(0);
+    }
+  };
+
+  const openMethodModal = (product: Product) => {
+    setProductDropdownOpen(false);
+    setSelectedStockProduct(product);
+    setMethodModalOpen(true);
+  };
+
+  const openReorderModal = (product: Product) => {
+    setSelectedStockProduct(product);
+    setSupplierId(selectableSuppliers.length === 1 ? selectableSuppliers[0].id : '');
+    setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
+    setTotalAmount(0);
+    setUnitPrice(0);
+    setAmountEntryMode('total');
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setReorderModalOpen(true);
+  };
+
+  const handleChooseSupplierOrder = () => {
+    if (!selectedStockProduct) return;
+    setMethodModalOpen(false);
+    openReorderModal(selectedStockProduct);
+  };
+
+  const handleChooseManualStockMovement = () => {
+    if (!selectedStockProduct) return;
+    setMethodModalOpen(false);
+    setProductDropdownOpen(false);
+    navigate(`/stock?product=${selectedStockProduct.id}`);
+  };
+
   const openNewSaleModal = () => {
     resetQuickCustomerForm();
     setModalOpen(true);
@@ -388,12 +537,29 @@ export function SalesPage() {
   const closeNewSaleModal = () => {
     setModalOpen(false);
     setProductDropdownOpen(false);
+    setQuickProductModalOpen(false);
+    setMethodModalOpen(false);
+    setReorderModalOpen(false);
+    setSelectedStockProduct(null);
+    setSupplierId('');
+    setOrderQty(1);
+    setTotalAmount(0);
+    setUnitPrice(0);
+    setAmountEntryMode('total');
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setQuickProductErrors({});
+    setQuickProductForm(emptyQuickProduct());
     resetQuickCustomerForm();
   };
 
   const addToCart = (productId: string) => {
     const product = saleProducts.find((p) => p.id === productId);
     if (!product) return;
+    if (product.quantity <= 0) {
+      toast.error(`Le produit "${product.name}" est en rupture de stock`);
+      return;
+    }
 
     const existing = cart.find((c) => c.productId === productId);
     if (existing) {
@@ -691,6 +857,202 @@ export function SalesPage() {
     }
   };
 
+  const handleQuickProductSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user || creatingProduct) return;
+
+    const payload = {
+      name: quickProductForm.name.trim(),
+      barcode: quickProductForm.barcode.trim(),
+      categoryId: quickProductForm.categoryId,
+      buyPrice: Number(quickProductForm.buyPrice ?? 0),
+      sellPrice: Number(quickProductForm.sellPrice ?? 0),
+      quantity: Math.max(0, Math.floor(Number(quickProductForm.quantity ?? 0))),
+      alertThreshold: Math.max(0, Math.floor(Number(quickProductForm.alertThreshold ?? 0))),
+      usage: 'vente' as const,
+    };
+
+    const validation = validate(productSchema, payload);
+    if (!validation.success) {
+      setQuickProductErrors(validation.errors);
+      toast.error(Object.values(validation.errors)[0]);
+      return;
+    }
+
+    const normalizedName = normalizeForSearch(payload.name);
+    const duplicateByName = saleProducts.some((product) => normalizeForSearch(product.name) === normalizedName);
+    if (duplicateByName) {
+      setQuickProductErrors((prev) => ({ ...prev, name: 'Un produit avec ce nom existe deja' }));
+      toast.error('Un produit avec ce nom existe deja');
+      return;
+    }
+
+    if (payload.barcode) {
+      const duplicateByBarcode = allProducts.some((product) => product.barcode && product.barcode === payload.barcode);
+      if (duplicateByBarcode) {
+        setQuickProductErrors((prev) => ({ ...prev, barcode: 'Ce code-barres est deja utilise' }));
+        toast.error('Ce code-barres est deja utilise');
+        return;
+      }
+    }
+
+    setCreatingProduct(true);
+    try {
+      const now = nowISO();
+      const id = generateId();
+
+      await db.products.add({
+        id,
+        name: payload.name,
+        barcode: payload.barcode || '',
+        categoryId: payload.categoryId,
+        buyPrice: payload.buyPrice,
+        sellPrice: payload.sellPrice,
+        quantity: payload.quantity,
+        alertThreshold: payload.alertThreshold,
+        usage: payload.usage,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await logAction({
+        action: 'creation',
+        entity: 'produit',
+        entityId: id,
+        entityName: payload.name,
+        details: 'Cree depuis la page ventes',
+      });
+
+      setQuickProductModalOpen(false);
+      setQuickProductErrors({});
+      setQuickProductForm(emptyQuickProduct());
+      setProductSearch('');
+      setProductDropdownOpen(false);
+      toast.success('Produit cree avec succes');
+    } catch (error) {
+      console.error(error);
+      toast.error("Impossible d'ajouter le produit");
+    } finally {
+      setCreatingProduct(false);
+    }
+  };
+
+  const handleCreateSupplierOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedStockProduct || orderQty <= 0 || totalAmount <= 0) {
+      toast.error('Verifie les donnees de la commande (quantite et montant total)');
+      return;
+    }
+
+    const now = nowISO();
+    const total = totalAmount;
+    let finalSupplierId = supplierId;
+
+    if (!finalSupplierId) {
+      const fallbackSupplier = suppliers.find(
+        (s) => normalizeForSearch(s.name) === normalizeForSearch(FALLBACK_SUPPLIER_NAME)
+      );
+      if (fallbackSupplier) {
+        finalSupplierId = fallbackSupplier.id;
+      } else {
+        finalSupplierId = generateId();
+        await db.suppliers.add({
+          id: finalSupplierId,
+          name: FALLBACK_SUPPLIER_NAME,
+          phone: '-',
+          address: '-',
+          creditBalance: 0,
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
+    }
+
+    const orderId = generateSupplierOrderRef();
+
+    await db.supplierOrders.add({
+      id: orderId,
+      supplierId: finalSupplierId,
+      date: now,
+      total,
+      deposit: receiveNow && paymentMode === 'cash' ? total : 0,
+      status: receiveNow ? 'recue' : 'en_attente',
+      isCredit: receiveNow ? paymentMode === 'credit' : false,
+      userId: user?.id,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await db.orderItems.add({
+      id: generateId(),
+      orderId,
+      productId: selectedStockProduct.id,
+      productName: selectedStockProduct.name,
+      quantity: orderQty,
+      unitPrice,
+      total,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    if (receiveNow) {
+      await db.products.update(selectedStockProduct.id, {
+        quantity: selectedStockProduct.quantity + orderQty,
+        buyPrice: unitPrice,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.stockMovements.add({
+        id: generateId(),
+        productId: selectedStockProduct.id,
+        productName: selectedStockProduct.name,
+        type: 'entree',
+        quantity: orderQty,
+        date: now,
+        reason: `Reception commande fournisseur #${orderId}`,
+        userId: user?.id,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: finalSupplierId,
+        orderId,
+        amount: total,
+        type: paymentMode === 'credit' ? 'credit' : 'payment',
+        date: now,
+        note: paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande payee',
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      if (paymentMode === 'credit') {
+        const supplier = await db.suppliers.get(finalSupplierId);
+        if (supplier) {
+          await db.suppliers.update(finalSupplierId, {
+            creditBalance: (supplier.creditBalance ?? 0) + total,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        }
+      }
+    }
+
+    setReorderModalOpen(false);
+    setMethodModalOpen(false);
+    setSelectedStockProduct(null);
+    setProductDropdownOpen(false);
+    toast.success(receiveNow ? 'Commande enregistree et stock mis a jour' : 'Commande fournisseur enregistree');
+  };
+
   const viewSaleDetails = async (sale: Sale) => {
     const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
     setSelectedSale(sale);
@@ -969,13 +1331,23 @@ export function SalesPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-border bg-surface px-4 py-3">
         {isGerant && (
-          <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
-            <span className="text-xs font-semibold uppercase tracking-wide text-primary/80">
-              Ventes total
-            </span>
-            <span className="text-lg font-bold text-primary">
-              {formatCurrency(filteredSalesTotal)}
-            </span>
+          <div className="flex flex-wrap gap-2">
+            <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
+              <span className="text-xs font-semibold uppercase tracking-wide text-primary/80">
+                Ventes total
+              </span>
+              <span className="text-lg font-bold text-primary">
+                {formatCurrency(filteredSalesTotal)}
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 shadow-sm dark:border-emerald-900/50 dark:bg-emerald-900/10">
+              <span className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                Gains total
+              </span>
+              <span className="text-lg font-bold text-emerald-700 dark:text-emerald-400">
+                {formatCurrency(filteredSalesProfitTotal)}
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -1424,32 +1796,77 @@ export function SalesPage() {
               />
             </div>
             {productDropdownOpen && (
-              <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg divide-y divide-border/50">
-                {normalizeForSearch(productSearch).length < 2 ? (
+              <div className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg divide-y divide-border/50">
+                {normalizedProductSearch.length < 2 ? (
                   <p className="px-3 py-2 text-sm text-text-muted">
                     Commencez par saisir au moins 2 lettres pour afficher les produits.
                   </p>
                 ) : filteredProducts.length > 0 ? (
-                  filteredProducts.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        addToCart(p.id);
-                        setProductSearch('');
-                        setProductDropdownOpen(false);
-                      }}
-                      className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-text text-left transition-colors"
-                    >
-                      <span>{p.name}</span>
-                      <span className="text-xs text-text-muted">
-                        {formatCurrency(p.sellPrice)} · Stock: {p.quantity}
-                      </span>
-                    </button>
-                  ))
+                  filteredProducts.map((p) => {
+                    const isOutOfStock = p.quantity <= 0;
+                    if (isOutOfStock) {
+                      return (
+                        <div
+                          key={p.id}
+                          className="px-3 py-2 bg-slate-100/80 text-text-muted dark:bg-slate-800/80"
+                        >
+                          <div className="flex items-center justify-between gap-2 text-sm">
+                            <span>{p.name}</span>
+                            <span className="text-xs">
+                              {formatCurrency(p.sellPrice)} - Stock: {p.quantity} - Rupture
+                            </span>
+                          </div>
+                          <div className="mt-2 flex justify-end">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                openMethodModal(p);
+                              }}
+                            >
+                              Reapprovisionner
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          addToCart(p.id);
+                          setProductSearch('');
+                          setProductDropdownOpen(false);
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 text-sm text-left transition-colors text-text hover:bg-primary/10"
+                      >
+                        <span>{p.name}</span>
+                        <span className="text-xs text-text-muted">
+                          {formatCurrency(p.sellPrice)} - Stock: {p.quantity}
+                        </span>
+                      </button>
+                    );
+                  })
                 ) : (
-                  <p className="px-3 py-2 text-sm text-text-muted">Aucun produit trouvé</p>
+                  <div className="px-3 py-3 space-y-2">
+                    <p className="text-sm text-text-muted">Aucun produit trouve</p>
+                    {canCreateProductFromSearch && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="w-full justify-center"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={openQuickProductModal}
+                      >
+                        Créer ce produit
+                      </Button>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -1769,6 +2186,326 @@ export function SalesPage() {
       </Modal>
 
       <Modal
+        open={methodModalOpen}
+        onClose={() => setMethodModalOpen(false)}
+        title={`Approvisionnement: ${selectedStockProduct?.name ?? ''}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            Choisissez la méthode pour ravitailler ou modifier le stock de ce produit.
+          </p>
+
+          <button
+            type="button"
+            onClick={handleChooseSupplierOrder}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Commande fournisseur</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Créer une commande d'achat, en attente ou reçue immediatement.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleChooseManualStockMovement}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Ajustement ou retour client</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Ouvrir le formulaire des mouvements de stock pour corriger le stock.
+            </p>
+          </button>
+
+          <div className="flex justify-end pt-2">
+            <Button variant="secondary" type="button" onClick={() => setMethodModalOpen(false)}>
+              Fermer
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={reorderModalOpen}
+        onClose={() => setReorderModalOpen(false)}
+        title={`Commander: ${selectedStockProduct?.name ?? ''}`}
+      >
+        <form onSubmit={handleCreateSupplierOrder} className="space-y-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-text">Fournisseur (optionnel)</label>
+            <select
+              className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              <option value="">selectionnez un fournisseur</option>
+              {selectableSuppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted">
+              Si vous laissez vide, la commande sera rattachée à un fournisseur non renseigné.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Quantite</label>
+              <NumberInput
+                min={1}
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={orderQty}
+                onValueChange={handleOrderQtyChange}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={totalAmount || ''}
+                  onValueChange={handleTotalAmountChange}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Prix unitaire (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={unitPrice || ''}
+                  onValueChange={handleUnitPriceChange}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
+          {orderQty > 0 && totalAmount > 0 && unitPrice > 0 && (
+            <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+                  {amountEntryMode === 'total' ? 'Prix unitaire calcule :' : 'Montant total calcule :'}
+                </span>
+                <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
+                  {(amountEntryMode === 'total' ? unitPrice : totalAmount).toFixed(0)} FCFA
+                </span>
+              </div>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                La commande enregistrera un prix d'achat unitaire de {unitPrice.toFixed(0)} FCFA.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text">Traitement</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setReceiveNow(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  !receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                En attente
+              </button>
+              <button
+                type="button"
+                onClick={() => setReceiveNow(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                Reçue maintenant
+              </button>
+            </div>
+          </div>
+
+          {receiveNow && (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium text-text">Paiement fournisseur</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('cash')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Payée
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('credit')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'credit' ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Credit
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={() => setReorderModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">Enregistrer commande</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={quickProductModalOpen}
+        onClose={closeQuickProductModal}
+        title="Creer un produit"
+        className="max-w-xl"
+      >
+        <form onSubmit={handleQuickProductSubmit} className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input
+              id="saleQuickProductName"
+              label="Nom du produit"
+              value={quickProductForm.name}
+              onChange={(e) => {
+                setQuickProductForm((prev) => ({ ...prev, name: e.target.value }));
+                if (quickProductErrors.name) {
+                  setQuickProductErrors((prev) => ({ ...prev, name: '' }));
+                }
+              }}
+              placeholder="Ex : Savon 250ml"
+              error={quickProductErrors.name}
+              required
+            />
+            <Input
+              id="saleQuickProductBarcode"
+              label="Code-barres (optionnel)"
+              value={quickProductForm.barcode}
+              onChange={(e) => {
+                setQuickProductForm((prev) => ({ ...prev, barcode: e.target.value }));
+                if (quickProductErrors.barcode) {
+                  setQuickProductErrors((prev) => ({ ...prev, barcode: '' }));
+                }
+              }}
+              placeholder="Ex : 1234567890123"
+              error={quickProductErrors.barcode}
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="saleQuickProductCategory" className="text-sm font-medium text-text">
+                Categorie
+              </label>
+              <select
+                id="saleQuickProductCategory"
+                className={`rounded-lg border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary ${
+                  quickProductErrors.categoryId ? 'border-danger' : 'border-border'
+                }`}
+                value={quickProductForm.categoryId}
+                onChange={(e) => {
+                  setQuickProductForm((prev) => ({ ...prev, categoryId: e.target.value }));
+                  if (quickProductErrors.categoryId) {
+                    setQuickProductErrors((prev) => ({ ...prev, categoryId: '' }));
+                  }
+                }}
+                required
+              >
+                <option value="">Selectionnez une categorie</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+              {quickProductErrors.categoryId && (
+                <span className="text-xs text-danger">{quickProductErrors.categoryId}</span>
+              )}
+            </div>
+
+            <NumberInput
+              id="saleQuickProductSellPrice"
+              label="Prix de vente"
+              min={0}
+              step="0.01"
+              value={quickProductForm.sellPrice}
+              onValueChange={(value) => {
+                setQuickProductForm((prev) => ({ ...prev, sellPrice: value }));
+                if (quickProductErrors.sellPrice) {
+                  setQuickProductErrors((prev) => ({ ...prev, sellPrice: '' }));
+                }
+              }}
+              error={quickProductErrors.sellPrice}
+              required
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <NumberInput
+              id="saleQuickProductBuyPrice"
+              label="Prix d'achat"
+              min={0}
+              step="0.01"
+              value={quickProductForm.buyPrice}
+              onValueChange={(value) => setQuickProductForm((prev) => ({ ...prev, buyPrice: value }))}
+            />
+            <NumberInput
+              id="saleQuickProductQuantity"
+              label="Stock initial"
+              min={0}
+              step="1"
+              value={quickProductForm.quantity}
+              onValueChange={(value) => {
+                setQuickProductForm((prev) => ({ ...prev, quantity: value }));
+                if (quickProductErrors.quantity) {
+                  setQuickProductErrors((prev) => ({ ...prev, quantity: '' }));
+                }
+              }}
+              error={quickProductErrors.quantity}
+            />
+            <NumberInput
+              id="saleQuickProductThreshold"
+              label="Seuil alerte"
+              min={0}
+              step="1"
+              value={quickProductForm.alertThreshold}
+              onValueChange={(value) => {
+                setQuickProductForm((prev) => ({ ...prev, alertThreshold: value }));
+                if (quickProductErrors.alertThreshold) {
+                  setQuickProductErrors((prev) => ({ ...prev, alertThreshold: '' }));
+                }
+              }}
+              error={quickProductErrors.alertThreshold}
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={closeQuickProductModal} disabled={creatingProduct}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={creatingProduct}>
+              {creatingProduct ? 'Creation...' : 'Creer le produit'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
         open={detailModalOpen}
         onClose={() => setDetailModalOpen(false)}
         title={`Vente #${selectedSale?.id ?? ''}`}
@@ -1949,4 +2686,3 @@ export function SalesPage() {
     </div>
   );
 }
-

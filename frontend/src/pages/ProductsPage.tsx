@@ -318,7 +318,7 @@ export function ProductsPage() {
       return;
     }
 
-    toast.success(editing ? 'Produit modifie' : 'Produit ajoute');
+    toast.success(editing ? 'Produit modifié' : 'Produit ajouté');
   };
 
   const handleCreateSupplierOrder = async (e: FormEvent) => {
