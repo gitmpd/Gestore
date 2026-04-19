@@ -51,7 +51,11 @@ export function ChangePasswordPage() {
           },
           body: JSON.stringify(body),
         });
-
+        if (res.status === 401) {
+          useAuthStore.getState().logout();
+          navigate('/login');
+          return;
+        }
         if (res.ok) {
           const updatedUser = await res.json();
           loginFn(

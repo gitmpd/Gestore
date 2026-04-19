@@ -1,22 +1,24 @@
-import { useState, useMemo, type FormEvent } from 'react';
+import { useEffect, useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer } from 'lucide-react';
+import { Trash2, ShoppingBag, Eye, XCircle, Search, ArrowLeft, Download, Printer, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, UserPlus, CreditCard, CheckCircle2, Calculator } from 'lucide-react';
 import { db } from '@/db';
-import type { PaymentMethod, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
+import type { Customer, PaymentMethod, Product, Sale, SaleItem as SaleItemType, SaleStatus } from '@/types';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, generateReference, nowISO, formatCurrency, formatDateTime } from '@/lib/utils';
+import { generateId, generateReference, generateSupplierOrderRef, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
 import { logAction } from '@/services/auditService';
-import { trackDeletion } from '@/services/syncService';
 import { confirmAction } from '@/stores/confirmStore';
+import { customerSchema, productSchema, validate } from '@/lib/validation';
 
 interface CartItem {
   productId: string;
@@ -26,44 +28,273 @@ interface CartItem {
   maxStock: number;
 }
 
+interface QuickProductForm {
+  name: string;
+  barcode: string;
+  categoryId: string;
+  buyPrice: number;
+  sellPrice: number;
+  quantity: number;
+  alertThreshold: number;
+}
+
+type QuickDateFilter = 'all' | 'today' | 'week' | 'last_week' | 'month' | 'last_month';
+type SaleSortKey = 'date' | 'total' | 'customer' | 'paymentMethod' | 'status';
+type SortDirection = 'asc' | 'desc';
+
+const SALES_LIST_STATE_KEY = 'sales-page-list-state';
+
 const paymentLabels: Record<PaymentMethod, string> = {
   cash: 'Espèces',
   credit: 'Crédit',
   mobile: 'Mobile Money',
 };
 
+const emptyQuickCustomer = (): Pick<Customer, 'name' | 'phone'> => ({
+  name: '',
+  phone: '',
+});
+
+const emptyQuickProduct = (): QuickProductForm => ({
+  name: '',
+  barcode: '',
+  categoryId: '',
+  buyPrice: 0,
+  sellPrice: 0,
+  quantity: 0,
+  alertThreshold: 5,
+});
+
+const FALLBACK_SUPPLIER_NAME = '';
+
+function toLocalDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getQuickDateRange(filter: QuickDateFilter) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const day = today.getDay();
+  const weekOffset = (day + 6) % 7; // Monday as week start
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - weekOffset);
+
+  if (filter === 'today') {
+    const iso = toLocalDateKey(today);
+    return { from: iso, to: iso };
+  }
+
+  if (filter === 'week') {
+    return { from: toLocalDateKey(weekStart), to: toLocalDateKey(today) };
+  }
+
+  if (filter === 'last_week') {
+    const start = new Date(weekStart);
+    start.setDate(start.getDate() - 7);
+    const end = new Date(weekStart);
+    end.setDate(end.getDate() - 1);
+    return { from: toLocalDateKey(start), to: toLocalDateKey(end) };
+  }
+
+  if (filter === 'month') {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { from: toLocalDateKey(start), to: toLocalDateKey(today) };
+  }
+
+  if (filter === 'last_month') {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return { from: toLocalDateKey(start), to: toLocalDateKey(end) };
+  }
+
+  return { from: '', to: '' };
+}
+
+function getInitialListState() {
+  const todayRange = getQuickDateRange('today');
+
+  if (typeof window === 'undefined') {
+    return {
+      saleSearch: '',
+      paymentFilter: 'all' as PaymentMethod | 'all',
+      statusFilter: 'all' as SaleStatus | 'all',
+      dateFrom: todayRange.from,
+      dateTo: todayRange.to,
+      quickDateFilter: 'today' as QuickDateFilter,
+      sortKey: 'date' as SaleSortKey,
+      sortDirection: 'desc' as SortDirection,
+      page: 1,
+      selectedSaleIds: [] as string[],
+    };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SALES_LIST_STATE_KEY);
+    if (!raw) throw new Error('empty');
+    const parsed = JSON.parse(raw) as Partial<{
+      saleSearch: string;
+      paymentFilter: PaymentMethod | 'all';
+      statusFilter: SaleStatus | 'all';
+      dateFrom: string;
+      dateTo: string;
+      quickDateFilter: QuickDateFilter;
+      sortKey: SaleSortKey;
+      sortDirection: SortDirection;
+      page: number;
+      selectedSaleIds: string[];
+    }>;
+
+    return {
+      saleSearch: parsed.saleSearch ?? '',
+      paymentFilter: parsed.paymentFilter ?? 'all',
+      statusFilter: parsed.statusFilter ?? 'all',
+      dateFrom: todayRange.from,
+      dateTo: todayRange.to,
+      quickDateFilter: 'today' as QuickDateFilter,
+      sortKey: parsed.sortKey ?? 'date',
+      sortDirection: parsed.sortDirection ?? 'desc',
+      page: typeof parsed.page === 'number' && parsed.page > 0 ? parsed.page : 1,
+      selectedSaleIds: Array.isArray(parsed.selectedSaleIds) ? parsed.selectedSaleIds.filter((id): id is string => typeof id === 'string') : [],
+    };
+  } catch {
+    return {
+      saleSearch: '',
+      paymentFilter: 'all' as PaymentMethod | 'all',
+      statusFilter: 'all' as SaleStatus | 'all',
+      dateFrom: todayRange.from,
+      dateTo: todayRange.to,
+      quickDateFilter: 'today' as QuickDateFilter,
+      sortKey: 'date' as SaleSortKey,
+      sortDirection: 'desc' as SortDirection,
+      page: 1,
+      selectedSaleIds: [] as string[],
+    };
+  }
+}
+
 export function SalesPage() {
+  const initialListState = getInitialListState();
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const isGerant = user?.role === 'gerant';
   const [modalOpen, setModalOpen] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [customerId, setCustomerId] = useState('');
+  const [quickCustomerForm, setQuickCustomerForm] = useState<Pick<Customer, 'name' | 'phone'>>(emptyQuickCustomer());
+  const [quickCustomerErrors, setQuickCustomerErrors] = useState<Record<string, string>>({});
+  const [quickCustomerOpen, setQuickCustomerOpen] = useState(false);
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [quickProductModalOpen, setQuickProductModalOpen] = useState(false);
+  const [quickProductForm, setQuickProductForm] = useState<QuickProductForm>(emptyQuickProduct());
+  const [quickProductErrors, setQuickProductErrors] = useState<Record<string, string>>({});
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [methodModalOpen, setMethodModalOpen] = useState(false);
+  const [reorderModalOpen, setReorderModalOpen] = useState(false);
+  const [selectedStockProduct, setSelectedStockProduct] = useState<Product | null>(null);
+  const [supplierId, setSupplierId] = useState('');
+  const [orderQty, setOrderQty] = useState(1);
+  const [totalAmount, setTotalAmount] = useState(0);
+  const [unitPrice, setUnitPrice] = useState(0);
+  const [amountEntryMode, setAmountEntryMode] = useState<'total' | 'unit'>('total');
+  const [receiveNow, setReceiveNow] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
   const [productSearch, setProductSearch] = useState('');
   const [productDropdownOpen, setProductDropdownOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [selectedItems, setSelectedItems] = useState<SaleItemType[]>([]);
-  const [selectedSaleIds, setSelectedSaleIds] = useState<string[]>([]);
+  const [selectedSaleIds, setSelectedSaleIds] = useState<string[]>(initialListState.selectedSaleIds);
+  const [salesToCancel, setSalesToCancel] = useState<Sale[]>([]);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelAmount, setCancelAmount] = useState(0);
 
-  const [saleSearch, setSaleSearch] = useState('');
-  const [paymentFilter, setPaymentFilter] = useState<PaymentMethod | 'all'>('all');
-  const [statusFilter, setStatusFilter] = useState<SaleStatus | 'all'>('all');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [saleSearch, setSaleSearch] = useState(initialListState.saleSearch);
+  const [paymentFilter, setPaymentFilter] = useState<PaymentMethod | 'all'>(initialListState.paymentFilter);
+  const [statusFilter, setStatusFilter] = useState<SaleStatus | 'all'>(initialListState.statusFilter);
+  const [dateFrom, setDateFrom] = useState(initialListState.dateFrom);
+  const [dateTo, setDateTo] = useState(initialListState.dateTo);
+  const [quickDateFilter, setQuickDateFilter] = useState<QuickDateFilter>(initialListState.quickDateFilter);
+  const [sortKey, setSortKey] = useState<SaleSortKey>(initialListState.sortKey);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(initialListState.sortDirection);
+  const [page, setPage] = useState(initialListState.page);
 
   const allProducts = useLiveQuery(() => db.products.orderBy('name').toArray()) ?? [];
-  const saleProducts = allProducts.filter((p) => !p.usage || p.usage === 'vente' || p.usage === 'achat_vente');
+  const categories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
+  const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
+  const selectableSuppliers = suppliers.filter(
+    (s) => normalizeForSearch(s.name) !== normalizeForSearch(FALLBACK_SUPPLIER_NAME)
+  );
+  const saleProducts = allProducts.filter(
+    (p) => !p.deleted && (!p.usage || p.usage === 'vente' || p.usage === 'achat_vente')
+  );
+  const productMap = useMemo(
+    () => new Map(allProducts.map((product) => [product.id, product])),
+    [allProducts]
+  );
   const customers = useLiveQuery(() => db.customers.orderBy('name').toArray()) ?? [];
   const users = useLiveQuery(() => db.users.toArray()) ?? [];
+  const saleAuditMap = useLiveQuery(async () => {
+    const logs = await db.auditLogs.where('entity').equals('vente').toArray();
+    const map = new Map<string, string>();
+    logs.forEach((log) => {
+      if (log.action === 'vente' && log.entityId && !map.has(log.entityId)) {
+        map.set(log.entityId, log.userName);
+      }
+    });
+    return map;
+  }) ?? new Map<string, string>();
   const userMap = new Map(users.map((u) => [u.id, u.name]));
   const customerMap = new Map(customers.map((c) => [c.id, c.name]));
+  const getSellerName = (sale: Sale) => {
+    if (sale.userName?.trim()) return sale.userName;
+    if (userMap.has(sale.userId)) return userMap.get(sale.userId) ?? '-';
+    if (saleAuditMap.has(sale.id)) return saleAuditMap.get(sale.id) ?? '-';
+    if (user?.id === sale.userId) return user.name;
+    return '-';
+  };
 
   const recentSales = useLiveQuery(async () => {
     const all = await db.sales.orderBy('date').reverse().limit(200).toArray();
     return all.filter((s) => !s.deleted);
   }) ?? [];
+
+  const saleItemsMap = useLiveQuery(async () => {
+  const items = await db.saleItems.toArray();
+  const map = new Map<string, SaleItemType[]>();
+
+  items.forEach((item) => {
+    if (!map.has(item.saleId)) {
+      map.set(item.saleId, []);
+    }
+    map.get(item.saleId)!.push(item);
+  });
+
+  return map;
+}, []) ?? new Map();
+
+  const getSaleProfit = (sale: Sale) => {
+    const items = saleItemsMap.get(sale.id) ?? [];
+    return items.reduce((sum: number, item: SaleItemType) => {
+      const product = productMap.get(item.productId);
+      const buyPrice = product?.buyPrice ?? 0;
+      return sum + ((item.unitPrice - buyPrice) * item.quantity);
+    }, 0);
+  };
+
+  const getSalePurchaseCost = (sale: Sale) => {
+    const items = saleItemsMap.get(sale.id) ?? [];
+    return items.reduce((sum: number, item: SaleItemType) => {
+      const product = productMap.get(item.productId);
+      const buyPrice = product?.buyPrice ?? 0;
+      return sum + (buyPrice * item.quantity);
+    }, 0);
+  };
 
   const filteredSales = useMemo(() => {
     return recentSales.filter((s) => {
@@ -72,31 +303,263 @@ export function SalesPage() {
       if (dateFrom && s.date < dateFrom) return false;
       if (dateTo && s.date > dateTo + 'T23:59:59') return false;
       if (saleSearch) {
-        const q = saleSearch.toLowerCase();
-        const clientName = s.customerId ? customerMap.get(s.customerId)?.toLowerCase() ?? '' : '';
-        const sellerName = userMap.get(s.userId)?.toLowerCase() ?? '';
+        const q = normalizeForSearch(saleSearch);
+        const clientName = s.customerId ? normalizeForSearch(customerMap.get(s.customerId) ?? '') : '';
+        const sellerName = normalizeForSearch(getSellerName(s));
+        const paymentText = normalizeForSearch(paymentLabels[s.paymentMethod]);
+        const paymentCode = normalizeForSearch(s.paymentMethod);
+        const statusText = normalizeForSearch(s.status === 'completed' ? 'Terminée' : 'Annulée');
+        const statusCode = normalizeForSearch(s.status);
+        const productText = (saleItemsMap.get(s.id) ?? [])
+          .map((item: SaleItemType) => normalizeForSearch(item.productName))
+          .join(' ');
         return (
-          s.id.toLowerCase().includes(q) ||
+          normalizeForSearch(s.id).includes(q) ||
           clientName.includes(q) ||
-          sellerName.includes(q)
+          sellerName.includes(q) ||
+          paymentText.includes(q) ||
+          paymentCode.includes(q) ||
+          statusText.includes(q) ||
+          statusCode.includes(q) ||
+          productText.includes(q)
         );
       }
       return true;
     });
-  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, dateFrom, dateTo]);
+  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, saleItemsMap, dateFrom, dateTo]);
 
-  const filteredProducts = saleProducts.filter(
-    (p) =>
-      p.quantity > 0 &&
-      (p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
-        (p.barcode && p.barcode.includes(productSearch)))
+  const completedSales = useMemo(
+    () => filteredSales.filter((sale) => sale.status === 'completed'),
+    [filteredSales]
   );
 
+  const cancelledSales = useMemo(
+    () => filteredSales.filter((sale) => sale.status === 'cancelled'),
+    [filteredSales]
+  );
+
+  const selectedFilteredSales = useMemo(
+    () => filteredSales.filter((sale) => selectedSaleIds.includes(sale.id)),
+    [filteredSales, selectedSaleIds]
+  );
+
+  const filteredSalesTotal = useMemo(
+    () => filteredSales.reduce((sum, sale) => sum + sale.total, 0),
+    [filteredSales]
+  );
+
+  const selectedSalesTotal = useMemo(
+    () => selectedFilteredSales.reduce((sum, sale) => sum + sale.total, 0),
+    [selectedFilteredSales]
+  );
+
+  const filteredSalesProfitTotal = useMemo(
+    () =>
+      completedSales.reduce((sum, sale) => {
+        const items = saleItemsMap.get(sale.id) ?? [];
+        const saleProfit = items.reduce((itemSum: number, item: SaleItemType) => {
+          const product = productMap.get(item.productId);
+          const buyPrice = product?.buyPrice ?? 0;
+          return itemSum + ((item.unitPrice - buyPrice) * item.quantity);
+        }, 0);
+        return sum + saleProfit;
+      }, 0),
+    [completedSales, saleItemsMap, productMap]
+  );
+
+  const hasActiveFilters = Boolean(
+    saleSearch || paymentFilter !== 'all' || statusFilter !== 'all' || dateFrom || dateTo
+  );
+
+  const itemsPerPage = 12;
+
+  const sortedSales = useMemo(() => {
+    const sales = [...filteredSales];
+    sales.sort((a, b) => {
+      let left = '';
+      let right = '';
+
+      switch (sortKey) {
+        case 'total':
+          return sortDirection === 'asc' ? a.total - b.total : b.total - a.total;
+        case 'customer':
+          left = a.customerId ? customerMap.get(a.customerId) ?? 'Anonyme' : 'Anonyme';
+          right = b.customerId ? customerMap.get(b.customerId) ?? 'Anonyme' : 'Anonyme';
+          break;
+        case 'paymentMethod':
+          left = paymentLabels[a.paymentMethod];
+          right = paymentLabels[b.paymentMethod];
+          break;
+        case 'status':
+          left = a.status;
+          right = b.status;
+          break;
+        case 'date':
+        default:
+          left = a.date;
+          right = b.date;
+          break;
+      }
+
+      const comparison = left.localeCompare(right, 'fr', { sensitivity: 'base' });
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+    return sales;
+  }, [filteredSales, sortKey, sortDirection, customerMap]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedSales.length / itemsPerPage));
+  const currentPage = Math.min(page, totalPages);
+  const paginatedSales = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return sortedSales.slice(start, start + itemsPerPage);
+  }, [sortedSales, currentPage]);
+
+  const visiblePageNumbers = useMemo(() => {
+    const start = Math.max(1, currentPage - 2);
+    const end = Math.min(totalPages, currentPage + 2);
+    return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+  }, [currentPage, totalPages]);
+
+  const normalizedProductSearch = normalizeForSearch(productSearch);
+  const filteredProducts = saleProducts.filter(
+    (p) =>
+      normalizedProductSearch.length >= 2 &&
+      (normalizeForSearch(p.name).includes(normalizedProductSearch) ||
+        (p.barcode && p.barcode.includes(productSearch)))
+  );
+  const canCreateProductFromSearch = normalizedProductSearch.length >= 2 && filteredProducts.length === 0;
+
   const total = cart.reduce((s, item) => s + item.quantity * item.unitPrice, 0);
+
+  const resetQuickCustomerForm = () => {
+    setQuickCustomerForm(emptyQuickCustomer());
+    setQuickCustomerErrors({});
+    setQuickCustomerOpen(false);
+    setCreatingCustomer(false);
+  };
+
+  const openQuickProductModal = () => {
+    if (categories.length === 0) {
+      toast.error('Ajoutez une categorie avant de creer un produit');
+      return;
+    }
+
+    setQuickProductErrors({});
+    setQuickProductForm({
+      ...emptyQuickProduct(),
+      name: productSearch.trim(),
+      categoryId: categories.length === 1 ? categories[0].id : '',
+    });
+    setProductDropdownOpen(false);
+    setQuickProductModalOpen(true);
+  };
+
+  const closeQuickProductModal = () => {
+    if (creatingProduct) return;
+    setQuickProductModalOpen(false);
+    setQuickProductErrors({});
+    setQuickProductForm(emptyQuickProduct());
+  };
+
+  const handleOrderQtyChange = (qty: number) => {
+    setOrderQty(qty);
+    if (qty <= 0) {
+      setTotalAmount(0);
+      setUnitPrice(0);
+      return;
+    }
+
+    if (amountEntryMode === 'total' && totalAmount > 0) {
+      setUnitPrice(totalAmount / qty);
+    }
+
+    if (amountEntryMode === 'unit' && unitPrice > 0) {
+      setTotalAmount(unitPrice * qty);
+    }
+  };
+
+  const handleTotalAmountChange = (amount: number) => {
+    setAmountEntryMode('total');
+    setTotalAmount(amount);
+    if (orderQty > 0 && amount > 0) {
+      setUnitPrice(amount / orderQty);
+    } else {
+      setUnitPrice(0);
+    }
+  };
+
+  const handleUnitPriceChange = (amount: number) => {
+    setAmountEntryMode('unit');
+    setUnitPrice(amount);
+    if (orderQty > 0 && amount > 0) {
+      setTotalAmount(amount * orderQty);
+    } else {
+      setTotalAmount(0);
+    }
+  };
+
+  const openMethodModal = (product: Product) => {
+    setProductDropdownOpen(false);
+    setSelectedStockProduct(product);
+    setMethodModalOpen(true);
+  };
+
+  const openReorderModal = (product: Product) => {
+    setSelectedStockProduct(product);
+    setSupplierId(selectableSuppliers.length === 1 ? selectableSuppliers[0].id : '');
+    setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
+    setTotalAmount(0);
+    setUnitPrice(0);
+    setAmountEntryMode('total');
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setReorderModalOpen(true);
+  };
+
+  const handleChooseSupplierOrder = () => {
+    if (!selectedStockProduct) return;
+    setMethodModalOpen(false);
+    openReorderModal(selectedStockProduct);
+  };
+
+  const handleChooseManualStockMovement = () => {
+    if (!selectedStockProduct) return;
+    setMethodModalOpen(false);
+    setProductDropdownOpen(false);
+    navigate(`/stock?product=${selectedStockProduct.id}`);
+  };
+
+  const openNewSaleModal = () => {
+    resetQuickCustomerForm();
+    setModalOpen(true);
+  };
+
+  const closeNewSaleModal = () => {
+    setModalOpen(false);
+    setProductDropdownOpen(false);
+    setQuickProductModalOpen(false);
+    setMethodModalOpen(false);
+    setReorderModalOpen(false);
+    setSelectedStockProduct(null);
+    setSupplierId('');
+    setOrderQty(1);
+    setTotalAmount(0);
+    setUnitPrice(0);
+    setAmountEntryMode('total');
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setQuickProductErrors({});
+    setQuickProductForm(emptyQuickProduct());
+    resetQuickCustomerForm();
+  };
 
   const addToCart = (productId: string) => {
     const product = saleProducts.find((p) => p.id === productId);
     if (!product) return;
+    if (product.quantity <= 0) {
+      toast.error(`Le produit "${product.name}" est en rupture de stock`);
+      return;
+    }
 
     const existing = cart.find((c) => c.productId === productId);
     if (existing) {
@@ -122,10 +585,18 @@ export function SalesPage() {
   };
 
   const updateCartQuantity = (productId: string, qty: number) => {
+    const currentItem = cart.find((c) => c.productId === productId);
+    const nextQty = Math.min(Math.max(0, qty), currentItem?.maxStock ?? 0);
+
+    if (nextQty <= 0) {
+      setCart(cart.filter((c) => c.productId !== productId));
+      return;
+    }
+
     setCart(
       cart.map((c) =>
         c.productId === productId
-          ? { ...c, quantity: Math.min(Math.max(0, qty), c.maxStock) }
+          ? { ...c, quantity: nextQty }
           : c
       )
     );
@@ -145,88 +616,179 @@ export function SalesPage() {
     setCart(cart.filter((c) => c.productId !== productId));
   };
 
+  const clearSaleFilters = () => {
+    setSaleSearch('');
+    setPaymentFilter('all');
+    setStatusFilter('all');
+    setDateFrom('');
+    setDateTo('');
+    setQuickDateFilter('all');
+    setPage(1);
+  };
+
+  const applyQuickDateFilter = (filter: QuickDateFilter) => {
+    const range = getQuickDateRange(filter);
+    setQuickDateFilter(filter);
+    setDateFrom(range.from);
+    setDateTo(range.to);
+    setPage(1);
+  };
+
+  const handleSort = (key: SaleSortKey) => {
+    if (sortKey === key) {
+      setSortDirection((direction) => (direction === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDirection(key === 'date' ? 'desc' : 'asc');
+    }
+    setPage(1);
+  };
+
+  const renderSortIcon = (key: SaleSortKey) => {
+    if (sortKey !== key) return <ArrowUpDown size={14} className="text-text-muted" />;
+    return sortDirection === 'asc'
+      ? <ArrowUp size={14} className="text-primary" />
+      : <ArrowDown size={14} className="text-primary" />;
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      SALES_LIST_STATE_KEY,
+      JSON.stringify({
+        saleSearch,
+        paymentFilter,
+        statusFilter,
+        dateFrom,
+        dateTo,
+        quickDateFilter,
+        sortKey,
+        sortDirection,
+        page: currentPage,
+        selectedSaleIds,
+      })
+    );
+  }, [
+    saleSearch,
+    paymentFilter,
+    statusFilter,
+    dateFrom,
+    dateTo,
+    quickDateFilter,
+    sortKey,
+    sortDirection,
+    currentPage,
+    selectedSaleIds,
+  ]);
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (cart.length === 0 || !user) return;
+    if (paymentMethod === 'credit' && !customerId) {
+      toast.error('Selectionnez un client pour une vente a credit');
+      return;
+    }
 
     try {
       const now = nowISO();
       const saleId = generateReference();
+      await db.transaction(
+        'rw',
+        [db.sales, db.saleItems, db.products, db.stockMovements, db.customers, db.creditTransactions],
+        async () => {
+          const productRecords = await Promise.all(cart.map((item) => db.products.get(item.productId)));
+          const productMap = new Map(
+            productRecords
+              .filter((product): product is NonNullable<typeof product> => Boolean(product))
+              .map((product) => [product.id, product])
+          );
 
-      await db.sales.add({
-        id: saleId,
-        userId: user.id,
-        customerId: customerId || undefined,
-        date: now,
-        total,
-        paymentMethod,
-        status: 'completed',
-        createdAt: now,
-        updatedAt: now,
-        syncStatus: 'pending',
-      });
+          for (const item of cart) {
+            const product = productMap.get(item.productId);
+            if (!product || product.deleted) {
+              throw new Error(`Le produit "${item.productName}" est introuvable. Rechargez la liste puis recommencez.`);
+            }
+            if (item.quantity > product.quantity) {
+              throw new Error(`Stock insuffisant pour "${product.name}" (${product.quantity} disponible(s)).`);
+            }
+          }
 
-      for (const item of cart) {
-        await db.saleItems.add({
-          id: generateId(),
-          saleId,
-          productId: item.productId,
-          productName: item.productName,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          total: item.quantity * item.unitPrice,
-          createdAt: now,
-          updatedAt: now,
-          syncStatus: 'pending',
-        });
-
-        const product = await db.products.get(item.productId);
-        if (product) {
-          await db.products.update(item.productId, {
-            quantity: Math.max(0, product.quantity - item.quantity),
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-
-          await db.stockMovements.add({
-            id: generateId(),
-            productId: item.productId,
-            productName: item.productName,
-            type: 'sortie',
-            quantity: item.quantity,
-            date: now,
-            reason: `Vente #${saleId}`,
+          await db.sales.add({
+            id: saleId,
             userId: user.id,
-            createdAt: now,
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-        }
-      }
-
-      if (paymentMethod === 'credit' && customerId) {
-        const customer = await db.customers.get(customerId);
-        if (customer) {
-          await db.customers.update(customerId, {
-            creditBalance: customer.creditBalance + total,
-            updatedAt: now,
-            syncStatus: 'pending',
-          });
-
-          await db.creditTransactions.add({
-            id: generateId(),
-            customerId,
-            saleId,
-            amount: total,
-            type: 'credit',
+            userName: user.name,
+            customerId: customerId || undefined,
             date: now,
-            note: `Vente #${saleId}`,
+            total,
+            paymentMethod,
+            status: 'completed',
             createdAt: now,
             updatedAt: now,
             syncStatus: 'pending',
           });
+
+          for (const item of cart) {
+            const product = productMap.get(item.productId)!;
+
+            await db.saleItems.add({
+              id: generateId(),
+              saleId,
+              productId: item.productId,
+              productName: item.productName,
+              quantity: item.quantity,
+              unitPrice: item.unitPrice,
+              total: item.quantity * item.unitPrice,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+
+            await db.products.update(item.productId, {
+              quantity: product.quantity - item.quantity,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+
+            await db.stockMovements.add({
+              id: generateId(),
+              productId: item.productId,
+              productName: item.productName,
+              type: 'sortie',
+              quantity: item.quantity,
+              date: now,
+              reason: `Vente #${saleId}`,
+              userId: user.id,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+          }
+
+          if (paymentMethod === 'credit' && customerId) {
+            const customer = await db.customers.get(customerId);
+            if (customer) {
+              await db.customers.update(customerId, {
+                creditBalance: customer.creditBalance + total,
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+
+              await db.creditTransactions.add({
+                id: generateId(),
+                customerId,
+                saleId,
+                amount: total,
+                type: 'credit',
+                date: now,
+                note: `Vente #${saleId}`,
+                createdAt: now,
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+            }
+          }
         }
-      }
+      );
 
       const itemsSummary = cart.map((i) => `${i.productName} x${i.quantity}`).join(', ');
       await logAction({
@@ -239,11 +801,256 @@ export function SalesPage() {
       setCart([]);
       setCustomerId('');
       setPaymentMethod('cash');
-      setModalOpen(false);
+      closeNewSaleModal();
       toast.success('Vente enregistrée avec succès');
     } catch (err) {
       toast.error('Erreur lors de l\'enregistrement : ' + (err as Error).message);
     }
+  };
+
+  const handleQuickCustomerSubmit = async () => {
+    if (!user || creatingCustomer) return;
+
+    const payload = {
+      name: quickCustomerForm.name.trim(),
+      phone: quickCustomerForm.phone.trim(),
+    };
+    const validation = validate(customerSchema, payload);
+    if (!validation.success) {
+      setQuickCustomerErrors(validation.errors);
+      return;
+    }
+
+    setCreatingCustomer(true);
+    try {
+      const now = nowISO();
+      const id = generateId();
+
+      await db.customers.add({
+        id,
+        name: payload.name,
+        phone: payload.phone,
+        creditBalance: 0,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await logAction({
+        action: 'creation',
+        entity: 'client',
+        entityId: id,
+        entityName: payload.name,
+        details: `Créé depuis la page de vente - Téléphone: ${payload.phone}`,
+      });
+
+      setCustomerId(id);
+      setQuickCustomerErrors({});
+      setQuickCustomerForm(emptyQuickCustomer());
+      setQuickCustomerOpen(false);
+      toast.success('Client créé et sélectionné');
+    } catch (error) {
+      console.error(error);
+      toast.error("Impossible d'ajouter le client");
+    } finally {
+      setCreatingCustomer(false);
+    }
+  };
+
+  const handleQuickProductSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user || creatingProduct) return;
+
+    const payload = {
+      name: quickProductForm.name.trim(),
+      barcode: quickProductForm.barcode.trim(),
+      categoryId: quickProductForm.categoryId,
+      buyPrice: Number(quickProductForm.buyPrice ?? 0),
+      sellPrice: Number(quickProductForm.sellPrice ?? 0),
+      quantity: Math.max(0, Math.floor(Number(quickProductForm.quantity ?? 0))),
+      alertThreshold: Math.max(0, Math.floor(Number(quickProductForm.alertThreshold ?? 0))),
+      usage: 'vente' as const,
+    };
+
+    const validation = validate(productSchema, payload);
+    if (!validation.success) {
+      setQuickProductErrors(validation.errors);
+      toast.error(Object.values(validation.errors)[0]);
+      return;
+    }
+
+    const normalizedName = normalizeForSearch(payload.name);
+    const duplicateByName = saleProducts.some((product) => normalizeForSearch(product.name) === normalizedName);
+    if (duplicateByName) {
+      setQuickProductErrors((prev) => ({ ...prev, name: 'Un produit avec ce nom existe deja' }));
+      toast.error('Un produit avec ce nom existe deja');
+      return;
+    }
+
+    if (payload.barcode) {
+      const duplicateByBarcode = allProducts.some((product) => product.barcode && product.barcode === payload.barcode);
+      if (duplicateByBarcode) {
+        setQuickProductErrors((prev) => ({ ...prev, barcode: 'Ce code-barres est deja utilise' }));
+        toast.error('Ce code-barres est deja utilise');
+        return;
+      }
+    }
+
+    setCreatingProduct(true);
+    try {
+      const now = nowISO();
+      const id = generateId();
+
+      await db.products.add({
+        id,
+        name: payload.name,
+        barcode: payload.barcode || '',
+        categoryId: payload.categoryId,
+        buyPrice: payload.buyPrice,
+        sellPrice: payload.sellPrice,
+        quantity: payload.quantity,
+        alertThreshold: payload.alertThreshold,
+        usage: payload.usage,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await logAction({
+        action: 'creation',
+        entity: 'produit',
+        entityId: id,
+        entityName: payload.name,
+        details: 'Cree depuis la page ventes',
+      });
+
+      setQuickProductModalOpen(false);
+      setQuickProductErrors({});
+      setQuickProductForm(emptyQuickProduct());
+      setProductSearch('');
+      setProductDropdownOpen(false);
+      toast.success('Produit cree avec succes');
+    } catch (error) {
+      console.error(error);
+      toast.error("Impossible d'ajouter le produit");
+    } finally {
+      setCreatingProduct(false);
+    }
+  };
+
+  const handleCreateSupplierOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedStockProduct || orderQty <= 0 || totalAmount <= 0) {
+      toast.error('Verifie les donnees de la commande (quantite et montant total)');
+      return;
+    }
+
+    const now = nowISO();
+    const total = totalAmount;
+    let finalSupplierId = supplierId;
+
+    if (!finalSupplierId) {
+      const fallbackSupplier = suppliers.find(
+        (s) => normalizeForSearch(s.name) === normalizeForSearch(FALLBACK_SUPPLIER_NAME)
+      );
+      if (fallbackSupplier) {
+        finalSupplierId = fallbackSupplier.id;
+      } else {
+        finalSupplierId = generateId();
+        await db.suppliers.add({
+          id: finalSupplierId,
+          name: FALLBACK_SUPPLIER_NAME,
+          phone: '-',
+          address: '-',
+          creditBalance: 0,
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
+    }
+
+    const orderId = generateSupplierOrderRef();
+
+    await db.supplierOrders.add({
+      id: orderId,
+      supplierId: finalSupplierId,
+      date: now,
+      total,
+      deposit: receiveNow && paymentMode === 'cash' ? total : 0,
+      status: receiveNow ? 'recue' : 'en_attente',
+      isCredit: receiveNow ? paymentMode === 'credit' : false,
+      userId: user?.id,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await db.orderItems.add({
+      id: generateId(),
+      orderId,
+      productId: selectedStockProduct.id,
+      productName: selectedStockProduct.name,
+      quantity: orderQty,
+      unitPrice,
+      total,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    if (receiveNow) {
+      await db.products.update(selectedStockProduct.id, {
+        quantity: selectedStockProduct.quantity + orderQty,
+        buyPrice: unitPrice,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.stockMovements.add({
+        id: generateId(),
+        productId: selectedStockProduct.id,
+        productName: selectedStockProduct.name,
+        type: 'entree',
+        quantity: orderQty,
+        date: now,
+        reason: `Reception commande fournisseur #${orderId}`,
+        userId: user?.id,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: finalSupplierId,
+        orderId,
+        amount: total,
+        type: paymentMode === 'credit' ? 'credit' : 'payment',
+        date: now,
+        note: paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande payee',
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      if (paymentMode === 'credit') {
+        const supplier = await db.suppliers.get(finalSupplierId);
+        if (supplier) {
+          await db.suppliers.update(finalSupplierId, {
+            creditBalance: (supplier.creditBalance ?? 0) + total,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        }
+      }
+    }
+
+    setReorderModalOpen(false);
+    setMethodModalOpen(false);
+    setSelectedStockProduct(null);
+    setProductDropdownOpen(false);
+    toast.success(receiveNow ? 'Commande enregistree et stock mis a jour' : 'Commande fournisseur enregistree');
   };
 
   const viewSaleDetails = async (sale: Sale) => {
@@ -253,41 +1060,134 @@ export function SalesPage() {
     setDetailModalOpen(true);
   };
 
-  const handleDeleteSale = async (sale: Sale) => {
+  const handleDeleteSale = (sale: Sale) => {
+    openCancelSalesModal([sale]);
+  };
+
+  const openCancelSalesModal = (sales: Sale[]) => {
+    const filtered = sales.filter((sale) => sale.status !== 'cancelled');
+    setSalesToCancel(filtered);
+    setCancelReason('');
+    setCancelAmount(filtered.length === 1 ? filtered[0].total : filtered.reduce((sum, sale) => sum + sale.total, 0));
+    setCancelModalOpen(true);
+  };
+
+  const cancelSales = async (sales: Sale[], reason: string, amountOverride?: number) => {
+    if (!user || sales.length === 0) return;
+
+    const now = nowISO();
+    const normalizedReason = reason.trim();
+
+    await db.transaction(
+      'rw',
+      [db.sales, db.saleItems, db.products, db.stockMovements, db.customers, db.creditTransactions],
+      async () => {
+        for (const sale of sales) {
+          const effectiveAmount = sales.length === 1 && typeof amountOverride === 'number' ? Math.max(0, amountOverride) : sale.total;
+          const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
+
+          for (const item of items) {
+            const product = await db.products.get(item.productId);
+            if (!product || product.deleted) continue;
+
+            await db.products.update(item.productId, {
+              quantity: product.quantity + item.quantity,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+
+            await db.stockMovements.add({
+              id: generateId(),
+              productId: item.productId,
+              productName: item.productName,
+              type: 'retour',
+              quantity: item.quantity,
+              date: now,
+              reason: normalizedReason ? `Annulation vente #${sale.id} - ${normalizedReason}` : `Annulation vente #${sale.id}`,
+              userId: user.id,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+          }
+
+          if (sale.paymentMethod === 'credit' && sale.customerId) {
+            const customer = await db.customers.get(sale.customerId);
+            const creditTxs = (await db.creditTransactions.where('saleId').equals(sale.id).toArray()).filter(
+              (tx) => !tx.deleted && tx.type === 'credit'
+            );
+
+            for (const tx of creditTxs) {
+              await db.creditTransactions.update(tx.id, {
+                deleted: true,
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+            }
+
+            if (customer) {
+              await db.customers.update(sale.customerId, {
+                creditBalance: Math.max(0, customer.creditBalance - effectiveAmount),
+                updatedAt: now,
+                syncStatus: 'pending',
+              });
+            }
+          }
+
+          await db.sales.update(sale.id, {
+            total: effectiveAmount,
+            status: 'cancelled',
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+
+          const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
+          await logAction({
+            action: 'suppression',
+            entity: 'vente',
+            entityId: sale.id,
+            entityName: `#${sale.id}`,
+            details: `${formatCurrency(effectiveAmount)} - ${paymentLabels[sale.paymentMethod]} - ${itemsSummary}${normalizedReason ? ` - Motif: ${normalizedReason}` : ''}`,
+          });
+        }
+      }
+    );
+  };
+
+  const handleConfirmCancelSales = async () => {
+    if (salesToCancel.length === 0) {
+      setCancelModalOpen(false);
+      return;
+    }
+    if (salesToCancel.length === 1 && cancelAmount < 0) {
+      toast.error("Le montant d'annulation ne peut pas etre negatif");
+      return;
+    }
+
     const ok = await confirmAction({
-      title: 'Supprimer la vente',
-      message: `Voulez-vous vraiment supprimer la vente #${sale.id} de ${formatCurrency(sale.total)} ?`,
-      confirmLabel: 'Supprimer',
+      title: salesToCancel.length === 1 ? 'Annuler la vente' : 'Annuler les ventes',
+      message:
+        salesToCancel.length === 1
+          ? `Voulez-vous vraiment annuler la vente #${salesToCancel[0].id} ? Le stock sera remis en place.`
+          : `Voulez-vous vraiment annuler ${salesToCancel.length} vente(s) ? Le stock sera remis en place.`,
+      confirmLabel: 'Confirmer',
       variant: 'danger',
     });
     if (!ok) return;
-  
-    const loadingToast = toast.loading('Suppression en cours...');
+
+    const loadingToast = toast.loading('Annulation en cours...');
     try {
-      const now = nowISO();
-      await db.sales.update(sale.id, {
-        deleted: true,
-        status: 'cancelled',
-        updatedAt: now,
-        syncStatus: 'pending',
-      });
-  
-      const items = (await db.saleItems.where('saleId').equals(sale.id).toArray()).filter((i) => !(i as any).deleted);
-      const itemsSummary = items.map((i) => `${i.productName} x${i.quantity}`).join(', ');
-  
-      await logAction({
-        action: 'suppression',
-        entity: 'vente',
-        entityId: sale.id,
-        entityName: `#${sale.id}`,
-        details: `${formatCurrency(sale.total)} — ${paymentLabels[sale.paymentMethod]} — ${itemsSummary}`,
-      });
-  
+      await cancelSales(salesToCancel, cancelReason, cancelAmount);
+      setCancelModalOpen(false);
+      setCancelReason('');
+      setCancelAmount(0);
+      setSalesToCancel([]);
+      setSelectedSaleIds([]);
       toast.dismiss(loadingToast);
-      toast.success(`Vente #${sale.id} supprimée`);
+      toast.success(salesToCancel.length === 1 ? 'Vente annulée' : 'Ventes annulées');
     } catch (error) {
       toast.dismiss(loadingToast);
-      toast.error('Erreur lors de la suppression');
+      toast.error('Erreur lors de l\'annulation : ' + (error as Error).message);
     }
   };
 
@@ -305,55 +1205,40 @@ export function SalesPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              const rows = filteredSales.map((s) => [
-                s.id,
-                new Date(s.date).toLocaleDateString('fr-FR'),
-                formatCurrency(s.total),
-                s.paymentMethod,
-                s.status === 'completed' ? 'Terminée' : 'Annulée',
-              ]);
-              exportCSV('ventes', ['Réf.', 'Date', 'Total', 'Paiement', 'Statut'], rows);
+              const rows = filteredSales.map((s) => {
+                if (isGerant) {
+                  return [
+                    s.id,
+                    new Date(s.date).toLocaleDateString('fr-FR'),
+                    formatCurrency(s.total),
+                    formatCurrency(getSalePurchaseCost(s)),
+                    formatCurrency(getSaleProfit(s)),
+                    s.paymentMethod,
+                    s.status === 'completed' ? 'Terminée' : 'Annulée',
+                  ];
+                }
+
+                return [
+                  s.id,
+                  new Date(s.date).toLocaleDateString('fr-FR'),
+                  formatCurrency(s.total),
+                  s.paymentMethod,
+                  s.status === 'completed' ? 'Terminée' : 'Annulée',
+                ];
+              });
+              const headers = isGerant
+                ? ['Ref.', 'Date', 'Montant', "Prix d'achat", 'Gain', 'Paiement', 'Statut']
+                : ['Réf.', 'Date', 'Montant', 'Paiement', 'Statut'];
+              exportCSV('ventes', headers, rows);
               toast.success('Export CSV téléchargé');
             }}
             disabled={filteredSales.length === 0}
           >
             <Download size={16} /> CSV
           </Button>
-          <Button onClick={() => setModalOpen(true)}>
+          <Button onClick={openNewSaleModal}>
             <ShoppingBag size={18} /> Nouvelle vente
           </Button>
-          {isGerant && selectedSaleIds.length > 0 && (
-            <Button
-              variant="danger"
-              onClick={async () => {
-                const ok = await confirmAction({
-                  title: 'Supprimer les ventes sélectionnées',
-                  message: `Voulez-vous annuler et supprimer ${selectedSaleIds.length} vente(s) sélectionnée(s) ? Cette action est logique (marque 'deleted').`,
-                  confirmLabel: 'Supprimer',
-                  variant: 'danger',
-                });
-                if (!ok) return;
-                const now = nowISO();
-                const ids: string[] = [];
-                for (const id of selectedSaleIds) {
-                  const s = await db.sales.get(id);
-                  if (!s) continue;
-                  ids.push(id);
-                  await db.sales.update(id, { deleted: true, status: 'cancelled', updatedAt: now, syncStatus: 'pending' });
-                  const itemIds = await db.saleItems.where('saleId').equals(id).primaryKeys();
-                  for (const itemId of itemIds) {
-                    await trackDeletion('saleItems', itemId as string);
-                  }
-                  await trackDeletion('sales', id);
-                }
-                await logAction({ action: 'suppression', entity: 'vente', details: `Suppression multiple: ${ids.join(', ')}` });
-                setSelectedSaleIds([]);
-                toast.success('Ventes supprimées');
-              }}
-            >
-              <Trash2 size={16} /> Supprimer
-            </Button>
-          )}
         </div>
       </div>
 
@@ -364,23 +1249,28 @@ export function SalesPage() {
             className="w-full pl-10 pr-3 py-2 rounded-lg border border-border bg-surface text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
             placeholder="Rechercher par réf., client ou vendeur..."
             value={saleSearch}
-            onChange={(e) => setSaleSearch(e.target.value)}
+            onChange={(e) => {
+              setSaleSearch(e.target.value);
+              setPage(1);
+            }}
           />
         </div>
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={paymentFilter}
-          onChange={(e) => setPaymentFilter(e.target.value as PaymentMethod | 'all')}
+          onChange={(e) => {
+            setPaymentFilter(e.target.value as PaymentMethod | 'all');
+            setPage(1);
+          }}
         >
-          <option value="all">Tous les paiements</option>
-          <option value="cash">Espèces</option>
-          <option value="mobile">Mobile Money</option>
-          <option value="credit">Crédit</option>
-        </select>
+          <option value="all">Tous les paiements</option>          <option value="mobile">Mobile Money</option>        </select>
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as SaleStatus | 'all')}
+          onChange={(e) => {
+            setStatusFilter(e.target.value as SaleStatus | 'all');
+            setPage(1);
+          }}
         >
           <option value="all">Tous les statuts</option>
           <option value="completed">Terminée</option>
@@ -390,73 +1280,405 @@ export function SalesPage() {
           type="date"
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => {
+            setDateFrom(e.target.value);
+            setQuickDateFilter('all');
+            setPage(1);
+          }}
           title="Date debut"
         />
         <input
           type="date"
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => {
+            setDateTo(e.target.value);
+            setQuickDateFilter('all');
+            setPage(1);
+          }}
           title="Date fin"
         />
+        {hasActiveFilters && (
+          <Button variant="secondary" size="sm" onClick={clearSaleFilters}>
+            Effacer filtres
+          </Button>
+        )}
       </div>
 
-      <div className="bg-surface rounded-xl border border-border">
-        <Table>
-          <Thead>
-            <Tr>
-              {isGerant && (
-                <Th>
+      <div className="flex flex-wrap gap-2">
+        {[
+          { key: 'all' as const, label: 'Tout' },
+          { key: 'today' as const, label: "Aujourd'hui" },
+          { key: 'week' as const, label: 'Cette semaine' },
+          { key: 'last_week' as const, label: 'Semaine dernière' },
+          { key: 'month' as const, label: 'Ce mois' },
+          { key: 'last_month' as const, label: 'Mois dernier' },
+        ].map((option) => (
+          <button
+            key={option.key}
+            type="button"
+            onClick={() => applyQuickDateFilter(option.key)}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+              quickDateFilter === option.key
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-border bg-surface px-4 py-3">
+        {isGerant && (
+          <div className="flex flex-wrap gap-2">
+            <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 shadow-sm">
+              <span className="text-xs font-semibold uppercase tracking-wide text-primary/80">
+                Ventes total
+              </span>
+              <span className="text-lg font-bold text-primary">
+                {formatCurrency(filteredSalesTotal)}
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-2 self-start sm:self-auto rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 shadow-sm dark:border-emerald-900/50 dark:bg-emerald-900/10">
+              <span className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                Gains total
+              </span>
+              <span className="text-lg font-bold text-emerald-700 dark:text-emerald-400">
+                {formatCurrency(filteredSalesProfitTotal)}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${selectedFilteredSales.length > 0 ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
+        <div className="rounded-xl border border-border bg-surface px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Resultats</p>
+          <p className="mt-1 text-2xl font-bold text-text">{filteredSales.length}</p>
+          <p className="text-sm text-text-muted">
+            vente(s)
+          </p>
+        </div>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-900/10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">Terminées</p>
+          <p className="mt-1 text-2xl font-bold text-emerald-700 dark:text-emerald-400">{completedSales.length}</p>
+          <p className="text-sm text-text-muted">
+            {isGerant ? formatCurrency(completedSales.reduce((sum, sale) => sum + sale.total, 0)) : 'vente(s) validée(s)'}
+          </p>
+        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/50 dark:bg-red-900/10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">Annulées</p>
+          <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-400">{cancelledSales.length}</p>
+          <p className="text-sm text-text-muted">
+            {isGerant ? formatCurrency(cancelledSales.reduce((sum, sale) => sum + sale.total, 0)) : 'vente(s) annulée(s)'}
+          </p>
+        </div>
+        {selectedFilteredSales.length > 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Selection</p>
+          <p className="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-400">{selectedFilteredSales.length}</p>
+          <p className="text-sm text-text-muted">
+            {isGerant ? formatCurrency(selectedSalesTotal) : 'vente(s) cochée(s)'}
+          </p>
+          </div>
+        )}
+      </div>
+
+      {selectedFilteredSales.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
+          <div>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+              {selectedFilteredSales.length} vente(s) selectionnée(s)
+            </p>
+            {isGerant && (
+              <p className="text-sm text-text-muted">
+                Montant cumule: {formatCurrency(selectedSalesTotal)}
+              </p>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setSelectedSaleIds([])}>
+              Deselectionner
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => openCancelSalesModal(selectedFilteredSales)}
+            >
+              <Trash2 size={16} /> Annuler les ventes
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+            >
+              <ChevronLeft size={16} />
+            </Button>
+            <div className="flex items-center gap-1">
+              {visiblePageNumbers.map((pageNumber) => (
+                <button
+                  key={pageNumber}
+                  type="button"
+                  onClick={() => setPage(pageNumber)}
+                  className={`h-9 min-w-9 rounded-lg border px-3 text-sm font-medium transition-colors ${
+                    pageNumber === currentPage
+                      ? 'border-primary bg-primary text-white'
+                      : 'border-border bg-surface text-text hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage(totalPages)}
+              disabled={currentPage >= totalPages}
+            >
+              {'>>'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+            >
+              <ChevronRight size={16} />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {sortedSales.length === 0 ? (
+        <div className="rounded-xl border border-border bg-surface px-4 py-10 text-center text-text-muted">
+          <div className="space-y-2">
+            <p>{recentSales.length === 0 ? 'Aucune vente enregistrée' : 'Aucune vente ne correspond aux filtres'}</p>
+            {hasActiveFilters && (
+              <Button variant="secondary" size="sm" onClick={clearSaleFilters}>
+                Effacer les filtres
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-3 lg:hidden">
+          {paginatedSales.map((s) => {
+            const items = saleItemsMap.get(s.id) ?? [];
+            return (
+              <div
+                key={s.id}
+                className={`rounded-xl border px-4 py-3 shadow-sm ${
+                  selectedSaleIds.includes(s.id) ? 'border-primary bg-primary/5' : 'border-border bg-surface'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-text">{formatCurrency(s.total)}</p>
+                    <p className="text-xs text-text-muted">Ref: {s.id}</p>
+                    <p className="text-sm text-text-muted">{formatDateTime(s.date)}</p>
+                  </div>
                   <input
                     type="checkbox"
-                    checked={filteredSales.length > 0 && selectedSaleIds.length === filteredSales.length}
+                    checked={selectedSaleIds.includes(s.id)}
                     onChange={(e) => {
-                      if (e.target.checked) setSelectedSaleIds(filteredSales.map((s) => s.id));
-                      else setSelectedSaleIds([]);
+                      if (e.target.checked) setSelectedSaleIds((r) => [...r, s.id]);
+                      else setSelectedSaleIds((r) => r.filter((id) => id !== s.id));
                     }}
                   />
-                </Th>
-              )}
-              <Th>Réf.</Th>
-              <Th>Date</Th>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant={s.paymentMethod === 'credit' ? 'warning' : 'default'}>
+                    {paymentLabels[s.paymentMethod]}
+                  </Badge>
+                  <Badge variant={s.status === 'completed' ? 'success' : 'danger'}>
+                    {s.status === 'completed' ? 'Terminée' : 'Annulée'}
+                  </Badge>
+                </div>
+
+                <div className="mt-3 space-y-1 text-sm">
+                  <p><span className="text-text-muted">Client:</span> {s.customerId ? customerMap.get(s.customerId) ?? 'â€”' : 'Anonyme'}</p>
+                  {isGerant && <p><span className="text-text-muted">Vendeur:</span> {getSellerName(s)}</p>}
+                  {isGerant && <p><span className="text-text-muted">Prix d'achat:</span> <span className="font-medium">{formatCurrency(getSalePurchaseCost(s))}</span></p>}
+                  {isGerant && <p><span className="text-text-muted">Gain:</span> <span className="font-medium">{formatCurrency(getSaleProfit(s))}</span></p>}
+                  <div>
+                    <p className="text-text-muted">Produits</p>
+                    <div className="space-y-1">
+                      {items.length === 0 ? (
+                        <span className="text-text-muted">-</span>
+                      ) : (
+                        items.slice(0, 3).map((i: SaleItemType) => (
+                          <div key={i.id} className="leading-tight">
+                            <span className="font-medium">{i.productName}</span>
+                            <span className="text-text-muted"> ({i.quantity})</span>
+                          </div>
+                        ))
+                      )}
+                      {items.length > 3 ? <div className="text-xs text-text-muted">+{items.length - 3} autre(s)</div> : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button variant="outline" size="sm"
+                    onClick={() => viewSaleDetails(s)}
+                    className="p-1.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 text-primary"
+                    title="Voir le détail"
+                  >
+                    <Eye size={16} /> Voir
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      const itemsForPrint = (await db.saleItems.where('saleId').equals(s.id).toArray()).filter((i) => !(i as any).deleted);
+                      printReceipt({
+                        saleId: s.id,
+                        date: s.date,
+                        items: itemsForPrint,
+                        total: s.total,
+                        paymentMethod: paymentLabels[s.paymentMethod],
+                        customerName: s.customerId ? customerMap.get(s.customerId) : undefined,
+                        vendorName: userMap.get(s.userId),
+                        shopName: getShopNameOrDefault(),
+                      });
+                    }}
+                  >
+                    <Printer size={16} /> Imprimer
+                  </Button>
+                  {s.status === 'completed' && (
+                    <Button variant="danger" size="sm" className="col-span-2"
+                      onClick={() => handleDeleteSale(s)}
+                      
+                    >
+                        <XCircle size={16} /> Annuler
+                      </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className={`${sortedSales.length === 0 ? 'hidden' : 'hidden lg:block'} bg-surface rounded-xl border border-border`}>
+        <Table>
+          <Thead className="sticky top-0 z-10 bg-surface">
+            <Tr>
+              <Th>
+                <input
+                  type="checkbox"
+                  checked={paginatedSales.length > 0 && paginatedSales.every((s) => selectedSaleIds.includes(s.id))}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedSaleIds((prev) => Array.from(new Set([...prev, ...paginatedSales.map((s) => s.id)])));
+                    } else {
+                      setSelectedSaleIds((prev) => prev.filter((id) => !paginatedSales.some((s) => s.id === id)));
+                    }
+                  }}
+                />
+              </Th>
+              <Th>Produits</Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('date')} className="inline-flex items-center gap-1">
+                  Date {renderSortIcon('date')}
+                </button>
+              </Th>
               {isGerant && <Th>Vendeur</Th>}
-              <Th>Client</Th>
-              <Th>Montant</Th>
-              <Th>Paiement</Th>
-              <Th>Statut</Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('customer')} className="inline-flex items-center gap-1">
+                  Client {renderSortIcon('customer')}
+                </button>
+              </Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('total')} className="inline-flex items-center gap-1">
+                  Montant {renderSortIcon('total')}
+                </button>
+              </Th>
+              {isGerant && <Th>Prix d'achat</Th>}
+              {isGerant && <Th>Gain</Th>}
+              <Th>
+                <button type="button" onClick={() => handleSort('paymentMethod')} className="inline-flex items-center gap-1">
+                  Paiement {renderSortIcon('paymentMethod')}
+                </button>
+              </Th>
+              <Th>
+                <button type="button" onClick={() => handleSort('status')} className="inline-flex items-center gap-1">
+                  Statut {renderSortIcon('status')}
+                </button>
+              </Th>
               <Th />
             </Tr>
           </Thead>
           <Tbody>
-            {filteredSales.length === 0 ? (
+            {sortedSales.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 9 : 7} className="text-center text-text-muted py-8">
+                <Td colSpan={isGerant ? 10 : 7} className="text-center text-text-muted py-8">
+                  <div className="space-y-2">
                   {recentSales.length === 0 ? 'Aucune vente enregistrée' : 'Aucune vente ne correspond aux filtres'}
+                  </div>
                 </Td>
               </Tr>
             ) : (
-              filteredSales.map((s) => (
-                <Tr key={s.id}>
+              paginatedSales.map((s) => (
+                <Tr key={s.id} className={selectedSaleIds.includes(s.id) ? 'bg-primary/5' : undefined}>
+                  <Td>
+                    <input
+                      type="checkbox"
+                      checked={selectedSaleIds.includes(s.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedSaleIds((r) => [...r, s.id]);
+                        else setSelectedSaleIds((r) => r.filter((id) => id !== s.id));
+                      }}
+                    />
+                  </Td>
+                  <Td className="text-sm">
+                    <div className="space-y-1">
+                      {(() => {
+                        const items = saleItemsMap.get(s.id) ?? [];
+                        if (items.length === 0) {
+                          return <span className="text-text-muted">-</span>;
+                        }
+                        return items.slice(0, 3).map((i: SaleItemType) => (
+                          <div key={i.id} className="leading-tight">
+                            <span className="font-medium">{i.productName}</span>
+                            <span className="text-text-muted"> ({i.quantity})</span>
+                          </div>
+                        ));
+                      })()}
+                      {(() => {
+                        const items = saleItemsMap.get(s.id) ?? [];
+                        return items.length > 3 ? <div className="text-xs text-text-muted">+{items.length - 3} autre(s)</div> : null;
+                      })()}
+                    </div>
+                  </Td>
+
+                  <Td>
+                    <div className="space-y-1">
+                      <div className="font-medium text-text">{formatDateTime(s.date)}</div>
+                      <div className="text-xs text-text-muted">Ref: {s.id}</div>
+                    </div>
+                  </Td>
                   {isGerant && (
-                    <Td>
-                      <input
-                        type="checkbox"
-                        checked={selectedSaleIds.includes(s.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) setSelectedSaleIds((r) => [...r, s.id]);
-                          else setSelectedSaleIds((r) => r.filter((id) => id !== s.id));
-                        }}
-                      />
-                    </Td>
-                  )}
-                  <Td className="font-mono text-sm">#{s.id}</Td>
-                  <Td className="text-text-muted">{formatDateTime(s.date)}</Td>
-                  {isGerant && (
-                    <Td className="text-sm">{userMap.get(s.userId) ?? '—'}</Td>
+                    <Td className="text-sm">{getSellerName(s)}</Td>
                   )}
                   <Td>{s.customerId ? customerMap.get(s.customerId) ?? '—' : '—'}</Td>
-                  <Td className="font-semibold">{formatCurrency(s.total)}</Td>
+                  <Td className="font-semibold whitespace-nowrap">{formatCurrency(s.total)}</Td>
+                  {isGerant && (
+                    <Td className="font-medium whitespace-nowrap">
+                      {formatCurrency(getSalePurchaseCost(s))}
+                    </Td>
+                  )}
+                  {isGerant && (
+                    <Td className="font-medium whitespace-nowrap text-emerald-700 dark:text-emerald-400">
+                      {formatCurrency(getSaleProfit(s))}
+                    </Td>
+                  )}
                   <Td>
                     <Badge variant={s.paymentMethod === 'credit' ? 'warning' : 'default'}>
                       {paymentLabels[s.paymentMethod]}
@@ -468,7 +1690,7 @@ export function SalesPage() {
                     </Badge>
                   </Td>
                   <Td>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 justify-end">
                       <button
                         onClick={() => viewSaleDetails(s)}
                         className="p-1.5 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 text-primary"
@@ -476,7 +1698,7 @@ export function SalesPage() {
                       >
                         <Eye size={16} />
                       </button>
-                      {isGerant && s.status === 'completed' && (
+                      {s.status === 'completed' && (
                         <button
                           onClick={() => handleDeleteSale(s)}
                           className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30 text-danger"
@@ -494,11 +1716,69 @@ export function SalesPage() {
         </Table>
       </div>
 
+      {sortedSales.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-border bg-surface px-4 py-3">
+          <p className="text-sm text-text-muted">
+            Page {currentPage} sur {totalPages}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+            >
+              <ChevronLeft size={16} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage(1)}
+              disabled={currentPage <= 1}
+            >
+              {'<<'}
+            </Button>
+            <div className="flex items-center gap-1">
+              {visiblePageNumbers.map((pageNumber) => (
+                <button
+                  key={pageNumber}
+                  type="button"
+                  onClick={() => setPage(pageNumber)}
+                  className={`h-9 min-w-9 rounded-lg border px-3 text-sm font-medium transition-colors ${
+                    pageNumber === currentPage
+                      ? 'border-primary bg-primary text-white'
+                      : 'border-border bg-surface text-text hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage(totalPages)}
+              disabled={currentPage >= totalPages}
+            >
+              {'>>'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+            >
+              <ChevronRight size={16} />
+            </Button>
+          </div>
+        </div>
+      )}
+
       <Modal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={closeNewSaleModal}
         title="Nouvelle vente"
-        className="max-w-2xl"
+        className="max-w-4xl p-4 sm:p-6 mx-2 sm:mx-4"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
@@ -508,7 +1788,7 @@ export function SalesPage() {
               <input
                 type="text"
                 className="flex-1 bg-transparent outline-none text-text placeholder:text-text-muted min-w-0"
-                placeholder="Rechercher par nom ou code-barres..."
+                placeholder="Tapez au moins 2 lettres ou un code-barres..."
                 value={productSearch}
                 onChange={(e) => { setProductSearch(e.target.value); setProductDropdownOpen(true); }}
                 onFocus={() => setProductDropdownOpen(true)}
@@ -516,129 +1796,710 @@ export function SalesPage() {
               />
             </div>
             {productDropdownOpen && (
-              <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg divide-y divide-border/50">
-                {filteredProducts.length > 0 ? (
-                  filteredProducts.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        addToCart(p.id);
-                        setProductSearch('');
-                        setProductDropdownOpen(false);
-                      }}
-                      className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-text text-left transition-colors"
-                    >
-                      <span>{p.name}</span>
-                      <span className="text-xs text-text-muted">
-                        {formatCurrency(p.sellPrice)} · Stock: {p.quantity}
-                      </span>
-                    </button>
-                  ))
+              <div className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg divide-y divide-border/50">
+                {normalizedProductSearch.length < 2 ? (
+                  <p className="px-3 py-2 text-sm text-text-muted">
+                    Commencez par saisir au moins 2 lettres pour afficher les produits.
+                  </p>
+                ) : filteredProducts.length > 0 ? (
+                  filteredProducts.map((p) => {
+                    const isOutOfStock = p.quantity <= 0;
+                    if (isOutOfStock) {
+                      return (
+                        <div
+                          key={p.id}
+                          className="px-3 py-2 bg-slate-100/80 text-text-muted dark:bg-slate-800/80"
+                        >
+                          <div className="flex items-center justify-between gap-2 text-sm">
+                            <span>{p.name}</span>
+                            <span className="text-xs">
+                              {formatCurrency(p.sellPrice)} - Stock: {p.quantity} - Rupture
+                            </span>
+                          </div>
+                          <div className="mt-2 flex justify-end">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                openMethodModal(p);
+                              }}
+                            >
+                              Reapprovisionner
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          addToCart(p.id);
+                          setProductSearch('');
+                          setProductDropdownOpen(false);
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 text-sm text-left transition-colors text-text hover:bg-primary/10"
+                      >
+                        <span>{p.name}</span>
+                        <span className="text-xs text-text-muted">
+                          {formatCurrency(p.sellPrice)} - Stock: {p.quantity}
+                        </span>
+                      </button>
+                    );
+                  })
                 ) : (
-                  <p className="px-3 py-2 text-sm text-text-muted">Aucun produit trouvé</p>
+                  <div className="px-3 py-3 space-y-2">
+                    <p className="text-sm text-text-muted">Aucun produit trouve</p>
+                    {canCreateProductFromSearch && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="w-full justify-center"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={openQuickProductModal}
+                      >
+                        Créer ce produit
+                      </Button>
+                    )}
+                  </div>
                 )}
               </div>
             )}
           </div>
 
-          {cart.length > 0 && (
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full text-sm text-text">
-                <thead className="bg-slate-50 dark:bg-slate-800 border-b border-border">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Produit</th>
-                    <th className="px-3 py-2 text-center w-24">Qté</th>
-                    <th className="px-3 py-2 text-right">Prix</th>
-                    <th className="px-3 py-2 text-right">Total</th>
-                    <th className="w-10" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {cart.map((item) => (
-                    <tr key={item.productId}>
-                      <td className="px-3 py-2">{item.productName}</td>
-                      <td className="px-3 py-2 text-center">
-                        <input
-                          type="number"
-                          min={0}
-                          max={item.maxStock}
-                          value={item.quantity}
-                          onChange={(e) =>
-                            updateCartQuantity(item.productId, Number(e.target.value) || 0)
-                          }
-                          className="w-16 text-center rounded border border-border bg-surface text-text px-1 py-0.5"
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <input type="number" min={0} step="0.01" value={item.unitPrice} onChange={(e) => updateCartUnitPrice(item.productId, Number(e.target.value) || 0) } className="w-24 text-right rounded border border-border bg-surface text-text px-1 py-0.5"/>
-                      </td>
-                      <td className="px-3 py-2 text-right font-medium">
-                        {formatCurrency(item.quantity * item.unitPrice)}
-                      </td>
-                      <td className="px-1">
-                        <button
-                          type="button"
-                          onClick={() => removeFromCart(item.productId)}
-                          className="p-1 text-danger hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot className="border-t-2 border-border bg-slate-50 dark:bg-slate-800">
-                  <tr>
-                    <td colSpan={3} className="px-3 py-2 text-right font-semibold">
-                      Total
-                    </td>
-                    <td className="px-3 py-2 text-right text-lg font-bold text-primary">
-                      {formatCurrency(total)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
+          {cart.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border bg-surface/60 px-4 py-5 text-center">
+              <p className="text-sm font-semibold text-text">Panier vide</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Recherchez un produit par nom ou code-barres pour commencer la vente.
+              </p>
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          {cart.length > 0 && (
+            <div className="space-y-3">
+              <div className="hidden sm:block border border-border rounded-lg overflow-hidden">
+                <table className="w-full text-sm text-text">
+                  <thead className="bg-slate-50 dark:bg-slate-800 border-b border-border">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Produit</th>
+                      <th className="px-3 py-2 text-center w-24">Qté</th>
+                      <th className="px-3 py-2 text-right">Prix</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                      <th className="w-10" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {cart.map((item) => (
+                      <tr key={item.productId}>
+                        <td className="px-3 py-2">{item.productName}</td>
+                        <td className="px-3 py-2 text-center">
+                          <NumberInput
+                            min={0}
+                            max={item.maxStock}
+                            value={item.quantity}
+                            onValueChange={(value) => updateCartQuantity(item.productId, value)}
+                            className="w-16 text-center rounded border border-border bg-surface text-text px-1 py-0.5"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <NumberInput
+                            min={0}
+                            step="0.01"
+                            value={item.unitPrice}
+                            onValueChange={(value) => updateCartUnitPrice(item.productId, value)}
+                            className="w-24 text-right rounded border border-border bg-surface text-text px-1 py-0.5"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {formatCurrency(item.quantity * item.unitPrice)}
+                        </td>
+                        <td className="px-1">
+                          <button
+                            type="button"
+                            onClick={() => removeFromCart(item.productId)}
+                            className="p-1 text-danger hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="border-t-2 border-border bg-slate-50 dark:bg-slate-800">
+                    <tr>
+                      <td colSpan={3} className="px-3 py-2 text-right font-semibold">
+                        Total
+                      </td>
+                      <td className="px-3 py-2 text-right text-lg font-bold text-primary">
+                        {formatCurrency(total)}
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div className="sm:hidden space-y-2">
+                {cart.map((item) => (
+                  <div key={item.productId} className="rounded-lg border border-border bg-surface p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium text-text break-words">{item.productName}</p>
+                      <button
+                        type="button"
+                        onClick={() => removeFromCart(item.productId)}
+                        className="p-1 text-danger hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <p className="text-xs text-text-muted">Quantité</p>
+                        <NumberInput
+                          min={0}
+                          max={item.maxStock}
+                          value={item.quantity}
+                          onValueChange={(value) => updateCartQuantity(item.productId, value)}
+                          className="w-full text-center rounded border border-border bg-surface text-text px-2 py-1.5"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs text-text-muted">Prix unitaire</p>
+                        <NumberInput
+                          min={0}
+                          step="0.01"
+                          value={item.unitPrice}
+                          onValueChange={(value) => updateCartUnitPrice(item.productId, value)}
+                          className="w-full text-right rounded border border-border bg-surface text-text px-2 py-1.5"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-1.5">
+                      <span className="text-xs text-text-muted">Sous-total</span>
+                      <span className="text-sm font-semibold text-text">
+                        {formatCurrency(item.quantity * item.unitPrice)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="rounded-lg border border-border bg-slate-50 dark:bg-slate-800 px-3 py-2 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-text">Total</span>
+                  <span className="text-lg font-bold text-primary">{formatCurrency(total)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-text">Mode de paiement</label>
-              <select
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-              >
-                <option value="cash">Espèces</option>
-                <option value="mobile">Mobile Money</option>
-                <option value="credit">Crédit</option>
-              </select>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {([
+                  { value: 'cash' as const, label: 'Espèces' },
+                  { value: 'mobile' as const, label: 'Mobile Money' },
+                  { value: 'credit' as const, label: 'Crédit' },
+                ]).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setPaymentMethod(option.value)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                      paymentMethod === option.value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-text">Client (optionnel)</label>
-              <select
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-              >
-                <option value="">— Aucun —</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
+            <div className="flex flex-col gap-2">
+              <div className="rounded-2xl border border-border bg-gradient-to-br from-slate-50 via-white to-slate-100/80 p-4 shadow-sm dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <CreditCard size={18} />
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-text">Client</label>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickCustomerOpen((open) => !open);
+                      setQuickCustomerErrors({});
+                    }}
+                    className={`self-start inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                      quickCustomerOpen
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-surface text-text-muted hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <UserPlus size={14} />
+                    {quickCustomerOpen ? 'Fermer' : 'Nouveau client'}
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  <select
+                    className="w-full rounded-xl border border-border bg-surface px-3 py-3 text-sm text-text shadow-sm transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                    value={customerId}
+                    onChange={(e) => {
+                      setCustomerId(e.target.value);
+                      if (e.target.value) {
+                        setQuickCustomerOpen(false);
+                        setQuickCustomerErrors({});
+                      }
+                    }}
+                  >
+                    <option value="">— Aucun —</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${
+                      customerId
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                        : 'bg-slate-100 text-text-muted dark:bg-slate-800'
+                    }`}>
+                      <CheckCircle2 size={14} />
+                      {customerId ? 'Client selectionne pour cette vente' : 'Aucun client selectionne'}
+                    </div>
+
+                    {!quickCustomerOpen && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickCustomerOpen(true);
+                          setQuickCustomerErrors({});
+                        }}
+                        className="text-xs font-semibold text-primary hover:underline"
+                      >
+                        Le client n'apparait pas ?
+                      </button>
+                    )}
+                  </div>
+
+                  {paymentMethod === 'credit' && (
+                    <div className={`rounded-xl border px-3 py-2 text-xs ${
+                      customerId
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-300'
+                        : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300'
+                    }`}>
+                      {customerId
+                        ? 'Le client est bien renseigne. La vente a credit peut etre enregistree.'
+                        : 'Une vente a credit doit obligatoirement etre rattachée a un client.'}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {quickCustomerOpen && (
+                <div className="overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-white to-sky-50 shadow-sm dark:from-primary/10 dark:via-slate-900 dark:to-slate-800">
+                  <div className="border-b border-primary/10 px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white">
+                        <UserPlus size={16} />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-text">Creation du client</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4 px-4 py-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Input
+                        id="saleQuickCustomerName"
+                        label="Nom du client"
+                        value={quickCustomerForm.name}
+                        onChange={(e) => {
+                          setQuickCustomerForm((prev) => ({ ...prev, name: e.target.value }));
+                          if (quickCustomerErrors.name) {
+                            setQuickCustomerErrors((prev) => ({ ...prev, name: '' }));
+                          }
+                        }}
+                        placeholder="Ex : Mamadou Traore"
+                        error={quickCustomerErrors.name}
+                        required
+                      />
+                      <Input
+                        id="saleQuickCustomerPhone"
+                        label="Telephone"
+                        value={quickCustomerForm.phone}
+                        onChange={(e) => {
+                          setQuickCustomerForm((prev) => ({ ...prev, phone: e.target.value }));
+                          if (quickCustomerErrors.phone) {
+                            setQuickCustomerErrors((prev) => ({ ...prev, phone: '' }));
+                          }
+                        }}
+                        placeholder="Ex : 76 12 34 56"
+                        error={quickCustomerErrors.phone}
+                        required
+                      />
+                    </div>
+
+                    <div className="rounded-xl bg-slate-100/80 px-3 py-2 text-xs text-text-muted dark:bg-slate-800/80">
+                      Conseil: ce client pourra etre reutilise plus tard pour ses prochaines ventes et pour le suivi du credit.
+                    </div>
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" type="button" onClick={resetQuickCustomerForm}>
+                        Annuler
+                      </Button>
+                      <Button type="button" onClick={handleQuickCustomerSubmit} disabled={creatingCustomer}>
+                        <UserPlus size={16} />
+                        {creatingCustomer ? 'Creation...' : 'Créer et selectionner'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button className="w-full sm:w-auto" variant="secondary" type="button" onClick={closeNewSaleModal}>
               Annuler
             </Button>
-            <Button type="submit" disabled={cart.length === 0 || cart.some((c) => c.quantity <= 0)}>
+            <Button className="w-full sm:w-auto" type="submit" disabled={cart.length === 0 || cart.some((c) => c.quantity <= 0)}>
               Valider la vente ({formatCurrency(total)})
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={methodModalOpen}
+        onClose={() => setMethodModalOpen(false)}
+        title={`Approvisionnement: ${selectedStockProduct?.name ?? ''}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            Choisissez la méthode pour ravitailler ou modifier le stock de ce produit.
+          </p>
+
+          <button
+            type="button"
+            onClick={handleChooseSupplierOrder}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Commande fournisseur</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Créer une commande d'achat, en attente ou reçue immediatement.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleChooseManualStockMovement}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Ajustement ou retour client</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Ouvrir le formulaire des mouvements de stock pour corriger le stock.
+            </p>
+          </button>
+
+          <div className="flex justify-end pt-2">
+            <Button variant="secondary" type="button" onClick={() => setMethodModalOpen(false)}>
+              Fermer
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={reorderModalOpen}
+        onClose={() => setReorderModalOpen(false)}
+        title={`Commander: ${selectedStockProduct?.name ?? ''}`}
+      >
+        <form onSubmit={handleCreateSupplierOrder} className="space-y-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-text">Fournisseur (optionnel)</label>
+            <select
+              className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              <option value="">selectionnez un fournisseur</option>
+              {selectableSuppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted">
+              Si vous laissez vide, la commande sera rattachée à un fournisseur non renseigné.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Quantite</label>
+              <NumberInput
+                min={1}
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={orderQty}
+                onValueChange={handleOrderQtyChange}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={totalAmount || ''}
+                  onValueChange={handleTotalAmountChange}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Prix unitaire (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={unitPrice || ''}
+                  onValueChange={handleUnitPriceChange}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
+          {orderQty > 0 && totalAmount > 0 && unitPrice > 0 && (
+            <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+                  {amountEntryMode === 'total' ? 'Prix unitaire calcule :' : 'Montant total calcule :'}
+                </span>
+                <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
+                  {(amountEntryMode === 'total' ? unitPrice : totalAmount).toFixed(0)} FCFA
+                </span>
+              </div>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                La commande enregistrera un prix d'achat unitaire de {unitPrice.toFixed(0)} FCFA.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text">Traitement</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setReceiveNow(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  !receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                En attente
+              </button>
+              <button
+                type="button"
+                onClick={() => setReceiveNow(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                Reçue maintenant
+              </button>
+            </div>
+          </div>
+
+          {receiveNow && (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium text-text">Paiement fournisseur</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('cash')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Payée
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('credit')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'credit' ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Credit
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={() => setReorderModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">Enregistrer commande</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={quickProductModalOpen}
+        onClose={closeQuickProductModal}
+        title="Creer un produit"
+        className="max-w-xl"
+      >
+        <form onSubmit={handleQuickProductSubmit} className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input
+              id="saleQuickProductName"
+              label="Nom du produit"
+              value={quickProductForm.name}
+              onChange={(e) => {
+                setQuickProductForm((prev) => ({ ...prev, name: e.target.value }));
+                if (quickProductErrors.name) {
+                  setQuickProductErrors((prev) => ({ ...prev, name: '' }));
+                }
+              }}
+              placeholder="Ex : Savon 250ml"
+              error={quickProductErrors.name}
+              required
+            />
+            <Input
+              id="saleQuickProductBarcode"
+              label="Code-barres (optionnel)"
+              value={quickProductForm.barcode}
+              onChange={(e) => {
+                setQuickProductForm((prev) => ({ ...prev, barcode: e.target.value }));
+                if (quickProductErrors.barcode) {
+                  setQuickProductErrors((prev) => ({ ...prev, barcode: '' }));
+                }
+              }}
+              placeholder="Ex : 1234567890123"
+              error={quickProductErrors.barcode}
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="saleQuickProductCategory" className="text-sm font-medium text-text">
+                Categorie
+              </label>
+              <select
+                id="saleQuickProductCategory"
+                className={`rounded-lg border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary ${
+                  quickProductErrors.categoryId ? 'border-danger' : 'border-border'
+                }`}
+                value={quickProductForm.categoryId}
+                onChange={(e) => {
+                  setQuickProductForm((prev) => ({ ...prev, categoryId: e.target.value }));
+                  if (quickProductErrors.categoryId) {
+                    setQuickProductErrors((prev) => ({ ...prev, categoryId: '' }));
+                  }
+                }}
+                required
+              >
+                <option value="">Selectionnez une categorie</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+              {quickProductErrors.categoryId && (
+                <span className="text-xs text-danger">{quickProductErrors.categoryId}</span>
+              )}
+            </div>
+
+            <NumberInput
+              id="saleQuickProductSellPrice"
+              label="Prix de vente"
+              min={0}
+              step="0.01"
+              value={quickProductForm.sellPrice}
+              onValueChange={(value) => {
+                setQuickProductForm((prev) => ({ ...prev, sellPrice: value }));
+                if (quickProductErrors.sellPrice) {
+                  setQuickProductErrors((prev) => ({ ...prev, sellPrice: '' }));
+                }
+              }}
+              error={quickProductErrors.sellPrice}
+              required
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <NumberInput
+              id="saleQuickProductBuyPrice"
+              label="Prix d'achat"
+              min={0}
+              step="0.01"
+              value={quickProductForm.buyPrice}
+              onValueChange={(value) => setQuickProductForm((prev) => ({ ...prev, buyPrice: value }))}
+            />
+            <NumberInput
+              id="saleQuickProductQuantity"
+              label="Stock initial"
+              min={0}
+              step="1"
+              value={quickProductForm.quantity}
+              onValueChange={(value) => {
+                setQuickProductForm((prev) => ({ ...prev, quantity: value }));
+                if (quickProductErrors.quantity) {
+                  setQuickProductErrors((prev) => ({ ...prev, quantity: '' }));
+                }
+              }}
+              error={quickProductErrors.quantity}
+            />
+            <NumberInput
+              id="saleQuickProductThreshold"
+              label="Seuil alerte"
+              min={0}
+              step="1"
+              value={quickProductForm.alertThreshold}
+              onValueChange={(value) => {
+                setQuickProductForm((prev) => ({ ...prev, alertThreshold: value }));
+                if (quickProductErrors.alertThreshold) {
+                  setQuickProductErrors((prev) => ({ ...prev, alertThreshold: '' }));
+                }
+              }}
+              error={quickProductErrors.alertThreshold}
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={closeQuickProductModal} disabled={creatingProduct}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={creatingProduct}>
+              {creatingProduct ? 'Creation...' : 'Creer le produit'}
             </Button>
           </div>
         </form>
@@ -676,7 +2537,7 @@ export function SalesPage() {
               {isGerant && (
                 <div>
                   <p className="text-text-muted">Vendeur</p>
-                  <p className="font-medium text-text">{userMap.get(selectedSale.userId) ?? '—'}</p>
+                  <p className="font-medium text-text">{getSellerName(selectedSale)}</p>
                 </div>
               )}
             </div>
@@ -702,8 +2563,8 @@ export function SalesPage() {
                   ))}
                 </tbody>
                 <tfoot className="border-t-2 border-border bg-slate-50 dark:bg-slate-800">
-                  <tr>
-                    <td colSpan={3} className="px-3 py-2 text-right font-semibold">Total</td>
+                    <tr>
+                      <td colSpan={3} className="px-3 py-2 text-right font-semibold">Total</td>
                     <td className="px-3 py-2 text-right text-lg font-bold text-primary">
                       {formatCurrency(selectedSale.total)}
                     </td>
@@ -736,6 +2597,91 @@ export function SalesPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        title={salesToCancel.length > 1 ? 'Annuler les ventes' : `Annuler la vente #${salesToCancel[0]?.id ?? ''}`}
+        className="max-w-lg"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            L'annulation remettra le stock en place et corrigera le crédit client si la vente était à crédit.
+          </p>
+
+          <div className="rounded-lg border border-border bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-text">
+            <p className="font-medium mb-1">Produits concernes</p>
+            <div className="space-y-1 text-text-muted">
+              {salesToCancel.length === 0 ? (
+                <p>-</p>
+              ) : salesToCancel.length === 1 ? (
+                (saleItemsMap.get(salesToCancel[0].id) ?? []).length > 0 ? (
+                  (saleItemsMap.get(salesToCancel[0].id) ?? []).map((item: SaleItemType) => (
+                    <p key={item.id}>
+                      {item.productName} x{item.quantity}
+                    </p>
+                  ))
+                ) : (
+                  <p>-</p>
+                )
+              ) : (
+                salesToCancel.map((sale) => {
+                  const items = saleItemsMap.get(sale.id) ?? [];
+                  const names = items.map((item: SaleItemType) => item.productName).slice(0, 2).join(', ');
+                  return (
+                    <p key={sale.id}>
+                      #{sale.id}: {names || '-'}{items.length > 2 ? '...' : ''}
+                    </p>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="cancelAmount" className="text-sm font-medium text-text">
+              Montant a annuler
+            </label>
+            <NumberInput
+              id="cancelAmount"
+              min={0}
+              step="0.01"
+              value={cancelAmount}
+              onValueChange={setCancelAmount}
+              disabled={salesToCancel.length > 1}
+              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
+            />
+            {salesToCancel.length > 1 && (
+              <p className="text-xs text-text-muted">
+                La modification du montant est disponible pour une annulation unitaire.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="cancelReason" className="text-sm font-medium text-text">
+              Motif d'annulation (optionnel)
+            </label>
+            <textarea
+              id="cancelReason"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              rows={3}
+              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-muted transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+              placeholder="Ex : erreur de saisie, vente doublonnée..."
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setCancelModalOpen(false)}>
+              Fermer
+            </Button>
+            <Button variant="danger" type="button" onClick={handleConfirmCancelSales}>
+              Confirmer l'annulation
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

@@ -75,6 +75,7 @@ export interface Supplier extends SyncFields {
 export interface Sale extends SyncFields {
   id: string;
   userId: string;
+  userName?: string;
   customerId?: string;
   date: string;
   total: number;
@@ -104,6 +105,7 @@ export interface SupplierOrder extends SyncFields {
   paymentMethod?: PaymentMethod;
   isCredit?: boolean;
   userId?: string;
+  deleted?: boolean;
 }
 
 export interface OrderItem extends SyncFields {
@@ -114,6 +116,7 @@ export interface OrderItem extends SyncFields {
   quantity: number;
   unitPrice: number;
   total: number;
+  deleted?: boolean;
 }
 
 export interface StockMovement extends SyncFields {
@@ -197,6 +200,16 @@ export interface Expense extends SyncFields {
   deleted?: boolean;
 }
 
+export interface CapitalEntry extends SyncFields {
+  id: string;
+  amount: number;
+  source: string;
+  note?: string;
+  date: string;
+  userId?: string;
+  deleted?: boolean;
+}
+
 export type AuditAction =
   | 'connexion'
   | 'deconnexion'
@@ -226,7 +239,8 @@ export type AuditEntity =
   | 'commande'
   | 'commande_client'
   | 'credit'
-  | 'depense';
+  | 'depense'
+  | 'capital';
 
 export interface AuditLog {
   id: string;

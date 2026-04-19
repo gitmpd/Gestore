@@ -27,6 +27,7 @@ type MutatingTable =
   | 'creditTransactions'
   | 'auditLogs'
   | 'expenses'
+  | 'capitalEntries'
   | 'customerOrders'
   | 'customerOrderItems'
   | 'priceHistory'
@@ -45,6 +46,7 @@ const tableMap: Record<MutatingTable, string> = {
   creditTransactions: 'creditTransaction',
   auditLogs: 'auditLog',
   expenses: 'expense',
+  capitalEntries: 'capitalEntry',
   customerOrders: 'customerOrder',
   customerOrderItems: 'customerOrderItem',
   priceHistory: 'priceHistory',
@@ -60,6 +62,7 @@ const managerOnlyMutationTables = new Set<MutatingTable>([
   'supplierOrders',
   'orderItems',
   'expenses',
+  'capitalEntries',
   'priceHistory',
 ]);
 
@@ -79,6 +82,14 @@ function sanitizeRecordForTable(
   const sanitized = { ...record };
   delete sanitized.syncStatus;
   delete sanitized.lastSyncedAt;
+
+  // Champs présents uniquement côté frontend (non persistés en base serveur).
+  if (table === 'sales') {
+    delete sanitized.userName;
+  }
+  if (table === 'supplierOrders') {
+    delete sanitized.isCredit;
+  }
 
   const ownerField = ownerScopedTables[table];
   if (ownerField && reqUserId) {
@@ -242,7 +253,7 @@ router.post('/', async (req: AuthRequest, res) => {
       }
     }
 
-    res.json({ success: true, results });
+    res.json({ success: true, serverTime: new Date().toISOString(), results });
   } catch (err) {
     console.error('Sync error:', err);
     res.status(500).json({ error: 'Erreur de synchronisation' });

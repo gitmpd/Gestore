@@ -7,12 +7,13 @@ import { db } from '@/db';
 import type { CustomerOrder, CustomerOrderStatus, PaymentMethod } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate, generateCustomerOrderRef } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateCustomerOrderRef, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 const statusLabels: Record<CustomerOrderStatus, string> = {
@@ -92,7 +93,6 @@ export function CustomerOrdersPage() {
   }) ?? [];
 
   const filteredOrders = useMemo(() => {
-    const customerMap = new Map(customers.map((c) => [c.id, c.name]));
     return orders.filter((o) => {
       if (statusFilter !== 'all' && o.status !== statusFilter) return false;
       if (paymentFilter === 'credit' && o.effectivePaymentMethod !== 'credit') return false;
@@ -100,9 +100,9 @@ export function CustomerOrdersPage() {
       if (dateFrom && o.date < dateFrom) return false;
       if (dateTo && o.date > dateTo + 'T23:59:59') return false;
       if (search) {
-        const q = search.toLowerCase();
-        const customerName = o.customerName.toLowerCase();
-        return o.id.toLowerCase().includes(q) || customerName.includes(q);
+        const q = normalizeForSearch(search);
+        const customerName = normalizeForSearch(o.customerName);
+        return normalizeForSearch(o.id).includes(q) || customerName.includes(q);
       }
       return true;
     });
@@ -111,7 +111,7 @@ export function CustomerOrdersPage() {
     return saleProducts.filter(
       (p) =>
         p.quantity > 0 &&
-        (p.name.toLowerCase().includes(search.toLowerCase()) || (p.barcode && p.barcode.includes(search)))
+        (normalizeForSearch(p.name).includes(normalizeForSearch(search)) || (p.barcode && p.barcode.includes(search)))
     );
   }, [saleProducts, search]);
   const orderTotal = orderLines.reduce((s, l) => s + l.quantity * l.unitPrice, 0);
@@ -221,6 +221,7 @@ export function CustomerOrdersPage() {
     await db.sales.add({
       id: saleId,
       userId: user.id,
+      userName: user.name,
       customerId: deliverOrder.customerId,
       date: now,
       total: deliverOrder.total,
@@ -549,22 +550,20 @@ export function CustomerOrdersPage() {
                     placeholder="Rechercher un produit..."
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-20 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-center"
                     placeholder="Qté"
                     value={line.quantity}
-                    onChange={(e) => updateLine(i, 'quantity', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'quantity', value)}
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
                     placeholder="0"
                     value={line.unitPrice === 0 ? "" : line.unitPrice}
-                    onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'unitPrice', value)}
                     required
                   />
                   <button type="button" onClick={() => removeLine(i)} className="p-1 text-danger">
@@ -603,14 +602,13 @@ export function CustomerOrdersPage() {
                   ))}
                 </div>
               </div>
-              <Input
+              <NumberInput
                 id="deposit"
                 label="Acompte (optionnel)"
-                type="number"
                 min={0}
                 max={orderTotal}
                 value={deposit || ''}
-                onChange={(e) => setDeposit(Number(e.target.value) || 0)}
+                onValueChange={setDeposit}
                 placeholder="Ex : 5000"
               />
               {deposit > 0 && (

@@ -105,3 +105,11 @@ export function formatDateTime(date: string | Date): string {
 export function nowISO(): string {
   return new Date().toISOString();
 }
+
+export function normalizeForSearch(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}

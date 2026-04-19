@@ -2,18 +2,19 @@ import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Trash2, PackageCheck, XCircle, Eye, ArrowLeft, CreditCard } from 'lucide-react';
+import { Plus, Search, Trash2, PackageCheck, XCircle, Eye, ArrowLeft } from 'lucide-react';
 import { db } from '@/db';
 import type { OrderStatus, SupplierOrder } from '@/types';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input'; // pour le depot
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef } from '@/lib/utils';
+import { generateId, nowISO, formatCurrency, formatDate, generateSupplierOrderRef, normalizeForSearch } from '@/lib/utils';
 import { logAction } from '@/services/auditService';
+import { trackDeletion } from '@/services/syncService';
 import { confirmAction } from '@/stores/confirmStore';
 
 const statusLabels: Record<OrderStatus, string> = {
@@ -69,7 +70,7 @@ export function SupplierOrdersPage() {
   const userMap = new Map(allUsers.map((u) => [u.id, u.name]));
 
   const orders = useLiveQuery(async () => {
-    const all = await db.supplierOrders.orderBy('date').reverse().toArray();
+    const all = (await db.supplierOrders.orderBy('date').reverse().toArray()).filter((o) => !o.deleted);
     const supplierMap = new Map((await db.suppliers.toArray()).map((s) => [s.id, s.name]));
     return all.map((o) => ({ ...o, supplierName: supplierMap.get(o.supplierId) || '—' }));
   }) ?? [];
@@ -81,8 +82,8 @@ export function SupplierOrdersPage() {
     if (dateFrom && o.date < dateFrom) return false;
     if (dateTo && o.date > dateTo + 'T23:59:59') return false;
     if (search) {
-      const q = search.toLowerCase();
-      return o.id.toLowerCase().includes(q) || o.supplierName.toLowerCase().includes(q);
+      const q = normalizeForSearch(search);
+      return normalizeForSearch(o.id).includes(q) || normalizeForSearch(o.supplierName).includes(q);
     }
     return true;
   });
@@ -319,8 +320,94 @@ export function SupplierOrdersPage() {
       entity: 'commande',
       entityId: order.id,
       entityName: order.supplierName,
+      details: `Commande #${order.id} - ${formatCurrency(order.total)}`,
+    });
+  };
+
+  const handleDelete = async (order: SupplierOrder & { supplierName: string }) => {
+    const ok = await confirmAction({
+      title: 'Supprimer la commande',
+      message: `Supprimer la commande #${order.id.slice(0, 8)} ?`,
+      confirmLabel: 'Supprimer',
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    const now = nowISO();
+    await db.supplierOrders.update(order.id, {
+      deleted: true,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+    await trackDeletion('supplierOrders', order.id);
+
+    const items = await db.orderItems.where('orderId').equals(order.id).toArray();
+
+    // Si la commande a été reçue, annuler les effets sur le stock
+    if (order.status === 'recue') {
+      await Promise.all(
+        items.map(async (item) => {
+          const product = await db.products.get(item.productId);
+          if (!product) return;
+
+          // Diminuer la quantité du produit
+          await db.products.update(item.productId, {
+            quantity: Math.max(0, product.quantity - item.quantity), // Ne pas aller en négatif
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+
+          // Ajouter un mouvement de stock de sortie pour annuler l'entrée
+          await db.stockMovements.add({
+            id: generateId(),
+            productId: item.productId,
+            productName: item.productName,
+            type: 'sortie',
+            quantity: item.quantity,
+            date: now,
+            reason: `Annulation commande fournisseur #${order.id.slice(0, 8)}`,
+            userId: user?.id,
+            createdAt: now,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        })
+      );
+    }
+
+    await Promise.all(
+      items.map(async (item) => {
+        await db.orderItems.update(item.id, {
+          deleted: true,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+        await trackDeletion('orderItems', item.id);
+      })
+    );
+
+    // Supprimer les transactions de crédit fournisseur associées
+    const relatedTransactions = await db.supplierCreditTransactions.where('orderId').equals(order.id).toArray();
+    await Promise.all(
+      relatedTransactions.map(async (tx) => {
+        await db.supplierCreditTransactions.update(tx.id, {
+          deleted: true,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+        await trackDeletion('supplierCreditTransactions', tx.id);
+      })
+    );
+
+    await logAction({
+      action: 'suppression',
+      entity: 'commande',
+      entityId: order.id,
+      entityName: order.supplierName,
       details: `Commande #${order.id.slice(0, 8)} - ${formatCurrency(order.total)}`,
     });
+
+    toast.success('Commande fournisseur supprimée');
   };
 
   const openDetail = async (order: SupplierOrder & { supplierName: string }) => {
@@ -479,6 +566,13 @@ export function SupplierOrdersPage() {
                           </button>
                         </>
                       )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDelete(o); }}
+                        className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
+                        title="Supprimer"
+                      >
+                        <Trash2 size={16} className="text-danger" />
+                      </button>
                     </div>
                   </Td>
                 </Tr>
@@ -532,22 +626,20 @@ export function SupplierOrdersPage() {
                     placeholder="Rechercher un produit..."
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-20 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-center"
                     placeholder="Qte"
                     value={line.quantity}
-                    onChange={(e) => updateLine(i, 'quantity', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'quantity', value)}
                     required
                   />
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     className="w-28 rounded-lg border border-border bg-surface text-text px-2 py-1.5 text-sm text-right"
                     placeholder="Prix"
                     value={line.unitPrice === 0 ? "" : line.unitPrice}
-                    onChange={(e) => updateLine(i, 'unitPrice', Number(e.target.value) || 0)}
+                    onValueChange={(value) => updateLine(i, 'unitPrice', value)}
                     required
                   />
                   <button type="button" onClick={() => removeLine(i)} className="p-1 text-danger">
@@ -709,14 +801,13 @@ export function SupplierOrdersPage() {
             </div>
 
             {paymentMode === 'partial' && (
-              <Input
+              <NumberInput
                 id="deposit"
                 label="Montant payé (acompte)"
-                type="number"
                 min={0}
                 max={receiveOrderData.total}
                 value={deposit || ''}
-                onChange={(e) => setDeposit(Number(e.target.value) || 0)}
+                onValueChange={setDeposit}
                 placeholder="Ex : 50000"
                 required
               />

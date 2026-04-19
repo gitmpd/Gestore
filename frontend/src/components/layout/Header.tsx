@@ -17,12 +17,14 @@ interface HeaderProps {
 export function Header({ onMenuClick }: HeaderProps) {
   const navigate = useNavigate();
   const logout = useAuthStore((s) => s.logout);
+  const token = useAuthStore((s) => s.token);
   const isOnline = useOnlineStatus();
   const { theme, toggle } = useThemeStore();
   const shopName = getShopNameOrDefault();
   const [notifOpen, setNotifOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+  const isOfflineSession = !token || token === 'offline-token';
 
   const lowStockProducts = useLiveQuery(async () => {
     const all = (await db.products.toArray()).filter((p) => !p.deleted);
@@ -77,7 +79,12 @@ export function Header({ onMenuClick }: HeaderProps) {
           <span className="hidden min-[421px]:inline">{isOnline ? 'En ligne' : 'Hors ligne'}</span>
         </div>
 
-        {isOnline && (
+        {isOfflineSession ? (
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
+            <WifiOff size={14} />
+            <span>Session hors-ligne</span>
+          </div>
+        ) : isOnline && (
           <button
             onClick={async () => {
               setSyncing(true);

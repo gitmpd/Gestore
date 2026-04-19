@@ -6,9 +6,10 @@ import { Package, ArrowLeft, Search, TrendingDown, CheckCircle, ArrowRightLeft, 
 import { db } from '@/db';
 import type { Product } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, generateSupplierOrderRef, nowISO } from '@/lib/utils';
+import { generateId, generateSupplierOrderRef, nowISO, normalizeForSearch } from '@/lib/utils';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { NumberInput } from '@/components/ui/NumberInput';
 
 type StockFilter = 'all' | 'rupture' | 'low' | 'ok';
 
@@ -30,6 +31,7 @@ export function LowStockPage() {
   const categories = useLiveQuery(() => db.categories.toArray()) ?? [];
   const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
+  const [amountEntryMode, setAmountEntryMode] = useState<'total' | 'unit'>('total');
 
   const allProducts = useLiveQuery(async () => {
     const products = (await db.products.toArray()).filter((p) => !p.deleted);
@@ -46,10 +48,10 @@ export function LowStockPage() {
       if (filter === 'low' && (p.quantity === 0 || p.quantity > p.alertThreshold)) return false;
       if (filter === 'ok' && p.quantity <= p.alertThreshold) return false;
       if (search) {
-        const q = search.toLowerCase();
+        const q = normalizeForSearch(search);
         return (
-          p.name.toLowerCase().includes(q) ||
-          (categoryMap.get(p.categoryId) ?? '').toLowerCase().includes(q)
+          normalizeForSearch(p.name).includes(q) ||
+          normalizeForSearch(categoryMap.get(p.categoryId) ?? '').includes(q)
         );
       }
       return true;
@@ -63,18 +65,37 @@ export function LowStockPage() {
   // Calcul du prix unitaire lorsque la quantité ou le montant total change
   const handleOrderQtyChange = (qty: number) => {
     setOrderQty(qty);
-    if (qty > 0 && totalAmount > 0) {
+    if (qty <= 0) {
+      setTotalAmount(0);
+      setUnitPrice(0);
+    }
+    if (amountEntryMode === 'total' && totalAmount > 0) {
       setUnitPrice(totalAmount / qty);
+    }
+
+    if (amountEntryMode === 'unit' && unitPrice > 0) {
+      setTotalAmount(unitPrice * qty);
     }
   };
 
   const handleTotalAmountChange = (amount: number) => {
+    setAmountEntryMode('total');
     setTotalAmount(amount);
     if (orderQty > 0 && amount > 0) {
       setUnitPrice(amount / orderQty);
+    } else {
+      setUnitPrice(0);
     }
   };
-
+  const handleUnitPriceChange = (amount: number) => {
+    setAmountEntryMode('unit');
+    setUnitPrice(amount);
+    if (orderQty > 0 && amount > 0) {
+      setTotalAmount(amount * orderQty);
+    } else {
+      setTotalAmount(0);
+    }
+  };
   function getStockLevel(qty: number, threshold: number) {
     if (qty === 0)
       return { label: 'Rupture', color: 'bg-red-500', bg: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800', text: 'text-red-700 dark:text-red-400', barColor: 'bg-red-500' };
@@ -86,7 +107,6 @@ export function LowStockPage() {
       return { label: 'Correct', color: 'bg-blue-500', bg: 'bg-surface border-border', text: 'text-blue-600', barColor: 'bg-blue-500' };
     return { label: 'Bon', color: 'bg-emerald-500', bg: 'bg-surface border-border', text: 'text-emerald-600', barColor: 'bg-emerald-500' };
   }
-
   const filterButtons: { key: StockFilter; label: string; count: number }[] = [
     { key: 'all', label: 'Tous', count: allProducts.length },
     { key: 'rupture', label: 'Rupture', count: ruptureCount },
@@ -105,6 +125,7 @@ export function LowStockPage() {
     setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
     setTotalAmount(0);
     setUnitPrice(0);
+    setAmountEntryMode('total');
     setReceiveNow(false);
     setPaymentMode('cash');
     setReorderModalOpen(true);
@@ -154,6 +175,7 @@ export function LowStockPage() {
       supplierId: finalSupplierId,
       date: now,
       total,
+      deposit: 0,
       status: receiveNow ? 'recue' : 'en_attente',
       isCredit: receiveNow ? paymentMode === 'credit' : false,
       userId: currentUser?.id,
@@ -425,15 +447,14 @@ export function LowStockPage() {
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-text">Quantité</label>
-              <input
-                type="number"
+              <label className="text-sm font-medium text-text">Quantite</label>
+              <NumberInput
                 min={1}
                 className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
                 value={orderQty}
-                onChange={(e) => handleOrderQtyChange(Number(e.target.value) || 0)}
+                onValueChange={handleOrderQtyChange}
                 required
               />
             </div>
@@ -441,31 +462,48 @@ export function LowStockPage() {
               <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
               <div className="relative">
                 <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   step="any"
-                  className="w-full pl-8 rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
                   value={totalAmount || ''}
-                  onChange={(e) => handleTotalAmountChange(Number(e.target.value) || 0)}
+                  onValueChange={handleTotalAmountChange}
                   placeholder="0"
-                  required
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Prix unitaire (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={unitPrice || ''}
+                  onValueChange={handleUnitPriceChange}
+                  placeholder="0"
                 />
               </div>
             </div>
           </div>
-
-          {/* Affichage du prix unitaire calculé */}
-          {orderQty > 0 && totalAmount > 0 && (
+          <p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
+          {orderQty > 0 && totalAmount > 0 && unitPrice > 0 && (
             <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">Prix unitaire calculé :</span>
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+                  {amountEntryMode === 'total' ? 'Prix unitaire calcule :' : 'Montant total calcule :'}
+                </span>
                 <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
-                  {(totalAmount / orderQty).toFixed(0)} FCFA
+                  {(amountEntryMode === 'total' ? unitPrice : totalAmount).toFixed(0)} FCFA
                 </span>
               </div>
               <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                Ce prix sera enregistré comme prix d'achat unitaire
+                La commande enregistrera un prix d'achat unitaire de {unitPrice.toFixed(0)} FCFA.
               </p>
             </div>
           )}

@@ -17,12 +17,14 @@ import type {
   CustomerOrder,
   CustomerOrderItem,
   SupplierCreditTransaction,
+  CapitalEntry,
 } from '@/types';
 
 class StoreDB extends Dexie {
   users!: EntityTable<User, 'id'>;
   auditLogs!: EntityTable<AuditLog, 'id'>;
   expenses!: EntityTable<Expense, 'id'>;
+  capitalEntries!: EntityTable<CapitalEntry, 'id'>;
   categories!: EntityTable<Category, 'id'>;
   products!: EntityTable<Product, 'id'>;
   customers!: EntityTable<Customer, 'id'>;
@@ -120,10 +122,67 @@ class StoreDB extends Dexie {
       supplierOrders: 'id, supplierId, date, status, deposit, syncStatus',
       supplierCreditTransactions: 'id, supplierId, type, date, orderId, deleted, syncStatus',
     });
+
+    this.version(16).stores({
+      capitalEntries: 'id, date, source, userId, deleted, syncStatus',
+    });
+
+    this.version(17).stores({
+      creditTransactions: 'id, customerId, saleId, type, date, deleted, syncStatus',
+    });
   }
 }
 
 export const db = new StoreDB();
+
+const SYNC_PENDING_EVENT = 'gestionstore:pending-change';
+const AUTO_SYNC_TABLES = [
+  'categories',
+  'products',
+  'customers',
+  'suppliers',
+  'sales',
+  'saleItems',
+  'supplierOrders',
+  'orderItems',
+  'stockMovements',
+  'creditTransactions',
+  'auditLogs',
+  'expenses',
+  'capitalEntries',
+  'customerOrders',
+  'customerOrderItems',
+  'priceHistory',
+  'supplierCreditTransactions',
+] as const;
+
+type AutoSyncTable = (typeof AUTO_SYNC_TABLES)[number];
+
+function emitSyncPendingEvent() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(SYNC_PENDING_EVENT));
+}
+
+function registerAutoSyncHooks(database: StoreDB) {
+  for (const tableName of AUTO_SYNC_TABLES) {
+    const table = database[tableName as AutoSyncTable] as EntityTable<{ id: string; syncStatus?: string }, 'id'>;
+
+    table.hook('creating', (_primKey, obj) => {
+      if (obj?.syncStatus === 'pending') emitSyncPendingEvent();
+    });
+
+    table.hook('updating', (modifications) => {
+      const patch = modifications as { syncStatus?: string };
+      if (patch.syncStatus === 'pending') emitSyncPendingEvent();
+    });
+  }
+
+  database.syncDeletions.hook('creating', () => {
+    emitSyncPendingEvent();
+  });
+}
+
+registerAutoSyncHooks(db);
 
 db.open().catch(async (err) => {
   console.error('DB open failed, deleting and retrying:', err);

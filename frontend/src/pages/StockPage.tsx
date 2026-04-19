@@ -7,12 +7,13 @@ import { db } from '@/db';
 import type { StockMovementType } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { ComboBox } from '@/components/ui/ComboBox';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
-import { generateId, nowISO, formatDateTime } from '@/lib/utils';
+import { generateId, nowISO, formatDateTime, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { stockMovementSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
@@ -81,11 +82,11 @@ export function StockPage() {
       if (dateFrom && m.date < dateFrom) return false;
       if (dateTo && m.date > dateTo + 'T23:59:59') return false;
       if (stockSearch) {
-        const q = stockSearch.toLowerCase();
+        const q = normalizeForSearch(stockSearch);
         return (
-          m.productName.toLowerCase().includes(q) ||
-          m.reason.toLowerCase().includes(q) ||
-          (m.userId && (userMap.get(m.userId) ?? '').toLowerCase().includes(q))
+          normalizeForSearch(m.productName).includes(q) ||
+          normalizeForSearch(m.reason).includes(q) ||
+          (m.userId ? normalizeForSearch(userMap.get(m.userId) ?? '').includes(q) : false)
         );
       }
       return true;
@@ -94,9 +95,18 @@ export function StockPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const vResult = validate(stockMovementSchema, { productId, type, quantity, reason });
+    const normalizedReason = reason.trim();
+    const vResult = validate(stockMovementSchema, { productId, type, quantity, reason: normalizedReason });
     if (!vResult.success) {
       toast.error(Object.values(vResult.errors)[0]);
+      return;
+    }
+    if (type === 'ajustement' && quantity < 0) {
+      toast.error('La quantite d\'ajustement ne peut pas etre negative');
+      return;
+    }
+    if (type === 'retour' && quantity <= 0) {
+      toast.error('La quantite doit etre superieure a 0 pour un retour client');
       return;
     }
     const product = await db.products.get(productId);
@@ -110,7 +120,7 @@ export function StockPage() {
     } else {
       if (quantity > product.quantity && !isGerant) {
         toast.error(
-          `Ajustement invalide: seul le gerant peut augmenter le stock (${product.quantity} -> ${quantity}).`
+          `Ajustement invalide: seul le gerant peut modifier le stock (${product.quantity} -> ${quantity}).`
         );
         return;
       }
@@ -130,7 +140,7 @@ export function StockPage() {
       type,
       quantity,
       date: now,
-      reason,
+      reason: normalizedReason,
       userId: currentUser?.id,
       createdAt: now,
       updatedAt: now,
@@ -147,8 +157,8 @@ export function StockPage() {
       entityName: product.name,
       details:
         type === 'ajustement'
-          ? `${typeLabel}: ${previousQty} -> ${newQty} (${deltaLabel}) - ${reason}`
-          : `${typeLabel}: +${quantity} (${previousQty} -> ${newQty}) - ${reason}`,
+          ? `${typeLabel}: ${previousQty} -> ${newQty} (${deltaLabel})${normalizedReason ? ` - ${normalizedReason}` : ''}`
+          : `${typeLabel}: +${quantity} (${previousQty} -> ${newQty})${normalizedReason ? ` - ${normalizedReason}` : ''}`,
     });
 
     setModalOpen(false);
@@ -264,7 +274,7 @@ export function StockPage() {
                     </Td>
                     <Td className="font-medium">{m.productName}</Td>
                     <Td className="font-semibold">{m.quantity}</Td>
-                    <Td className="text-text-muted">{m.reason}</Td>
+                    <Td className="text-text-muted">{m.reason?.trim() ? m.reason : '—'}</Td>
                     {isGerant && (
                       <Td className="text-sm">{m.userId ? userMap.get(m.userId) ?? '—' : '—'}</Td>
                     )}
@@ -321,23 +331,26 @@ export function StockPage() {
             />
           </div>
 
-          <Input
+          <NumberInput
             id="qty"
             label={type === 'ajustement' ? 'Nouvelle quantite réelle' : 'Quantite'}
-            type="number"
             min={0}
             value={quantity}
-            onChange={(e) => setQuantity(Number(e.target.value) || 0)}
+            onValueChange={setQuantity}
             placeholder="Ex : 10"
             required
           />
+          {type === 'ajustement' && (
+            <p className="text-xs text-text-muted">
+              Vous pouvez mettre `0` si le stock reel est vide.
+            </p>
+          )}
           <Input
             id="reason"
-            label="Raison"
+            label="Raison (optionnel)"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="Ex: Retour client, correction inventaire..."
-            required
           />
 
           <div className="flex justify-end gap-2 pt-2">

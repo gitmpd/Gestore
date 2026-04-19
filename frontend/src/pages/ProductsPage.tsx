@@ -1,17 +1,18 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Pencil, Trash2, ArrowLeft, Download } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, ArrowLeft, Download, PackagePlus, Calculator } from 'lucide-react';
 import { db } from '@/db';
 import type { Product, ProductUsage } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { NumberInput } from '@/components/ui/NumberInput';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
-import { generateId, nowISO, formatCurrency } from '@/lib/utils';
+import { generateId, generateSupplierOrderRef, nowISO, formatCurrency, normalizeForSearch } from '@/lib/utils';
 import { exportCSV } from '@/lib/export';
 import { productSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
@@ -30,6 +31,31 @@ const usageVariants: Record<ProductUsage, 'info' | 'warning' | 'success'> = {
   achat_vente: 'success',
 };
 
+type ProductStatusFilter = 'all' | 'ok' | 'low' | 'out';
+
+const getProductStatus = (product: Pick<Product, 'quantity' | 'alertThreshold'>): Exclude<ProductStatusFilter, 'all'> => {
+  if (product.quantity === 0) return 'out';
+  if (product.quantity <= product.alertThreshold) return 'low';
+  return 'ok';
+};
+
+const productStatusLabels: Record<Exclude<ProductStatusFilter, 'all'>, string> = {
+  ok: 'OK',
+  low: 'Stock bas',
+  out: 'Rupture',
+};
+
+const productStatusVariants: Record<Exclude<ProductStatusFilter, 'all'>, 'success' | 'danger' | 'warning'> = {
+  ok: 'success',
+  low: 'warning',
+  out: 'danger',
+};
+
+const renderProductStatusBadge = (product: Pick<Product, 'quantity' | 'alertThreshold'>) => {
+  const status = getProductStatus(product);
+  return <Badge variant={productStatusVariants[status]}>{productStatusLabels[status]}</Badge>;
+};
+
 const emptyProduct = (): Partial<Product> => ({
   name: '',
   barcode: '',
@@ -41,18 +67,34 @@ const emptyProduct = (): Partial<Product> => ({
   usage: 'achat_vente',
 });
 
+const FALLBACK_SUPPLIER_NAME = '';
+
 export function ProductsPage() {
   const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
   const isGerant = currentUser?.role === 'gerant';
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<ProductStatusFilter>('all');
   const [modalOpen, setModalOpen] = useState(false);
+  const [methodModalOpen, setMethodModalOpen] = useState(false);
+  const [reorderModalOpen, setReorderModalOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editing, setEditing] = useState<Product | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [form, setForm] = useState<Partial<Product>>(emptyProduct());
+  const [supplierId, setSupplierId] = useState('');
+  const [orderQty, setOrderQty] = useState(1);
+  const [totalAmount, setTotalAmount] = useState(0);
+  const [unitPrice, setUnitPrice] = useState(0);
+  const [amountEntryMode, setAmountEntryMode] = useState<'total' | 'unit'>('total');
+  const [submitMode, setSubmitMode] = useState<'save' | 'save_and_stock'>('save');
+  const [receiveNow, setReceiveNow] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<'cash' | 'credit'>('cash');
 
   const categories = useLiveQuery(() => db.categories.orderBy('name').toArray()) ?? [];
+  const suppliers = useLiveQuery(async () => (await db.suppliers.toArray()).filter((s) => !s.deleted)) ?? [];
+  const selectableSuppliers = suppliers.filter((s) => normalizeForSearch(s.name) !== normalizeForSearch(FALLBACK_SUPPLIER_NAME));
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
 
   const products = useLiveQuery(async () => {
@@ -62,17 +104,33 @@ export function ProductsPage() {
       .filter((p) => {
         const matchSearch =
           !search ||
-          p.name.toLowerCase().includes(search.toLowerCase()) ||
+          normalizeForSearch(p.name).includes(normalizeForSearch(search)) ||
           (p.barcode && p.barcode.includes(search));
         const matchCategory = !categoryFilter || p.categoryId === categoryFilter;
-        return matchSearch && matchCategory;
+        const matchStatus = statusFilter === 'all' || getProductStatus(p) === statusFilter;
+        return matchSearch && matchCategory && matchStatus;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [search, categoryFilter]) ?? [];
+  }, [search, categoryFilter, statusFilter]) ?? [];
+
+  useEffect(() => {
+    if (categories.length === 1 && !categoryFilter) {
+      setCategoryFilter(categories[0].id);
+    }
+  }, [categories, categoryFilter]);
+
+  useEffect(() => {
+    if (modalOpen && !editing && categories.length === 1 && !form.categoryId) {
+      setForm((prev) => ({ ...prev, categoryId: categories[0].id }));
+    }
+  }, [categories, editing, form.categoryId, modalOpen]);
 
   const openAdd = () => {
     setEditing(null);
-    setForm(emptyProduct());
+    setForm({
+      ...emptyProduct(),
+      categoryId: categories.length === 1 ? categories[0].id : '',
+    });
     setModalOpen(true);
   };
 
@@ -90,15 +148,82 @@ export function ProductsPage() {
     setModalOpen(true);
   };
 
+  const handleOrderQtyChange = (qty: number) => {
+    setOrderQty(qty);
+    if (qty <= 0) {
+      setTotalAmount(0);
+      setUnitPrice(0);
+      return;
+    }
+
+    if (amountEntryMode === 'total' && totalAmount > 0) {
+      setUnitPrice(totalAmount / qty);
+    }
+
+    if (amountEntryMode === 'unit' && unitPrice > 0) {
+      setTotalAmount(unitPrice * qty);
+    }
+  };
+
+  const handleTotalAmountChange = (amount: number) => {
+    setAmountEntryMode('total');
+    setTotalAmount(amount);
+    if (orderQty > 0 && amount > 0) {
+      setUnitPrice(amount / orderQty);
+    } else {
+      setUnitPrice(0);
+    }
+  };
+
+  const handleUnitPriceChange = (amount: number) => {
+    setAmountEntryMode('unit');
+    setUnitPrice(amount);
+    if (orderQty > 0 && amount > 0) {
+      setTotalAmount(amount * orderQty);
+    } else {
+      setTotalAmount(0);
+    }
+  };
+
+  const openMethodModal = (product: Product) => {
+    setSelectedProduct(product);
+    setMethodModalOpen(true);
+  };
+
+  const openReorderModal = (product: Product) => {
+    setSelectedProduct(product);
+    setSupplierId(selectableSuppliers.length === 1 ? selectableSuppliers[0].id : '');
+    setOrderQty(Math.max(1, product.alertThreshold - product.quantity));
+    setTotalAmount(0);
+    setUnitPrice(0);
+    setAmountEntryMode('total');
+    setReceiveNow(false);
+    setPaymentMode('cash');
+    setReorderModalOpen(true);
+  };
+
+  const handleChooseSupplierOrder = () => {
+    if (!selectedProduct) return;
+    setMethodModalOpen(false);
+    openReorderModal(selectedProduct);
+  };
+
+  const handleChooseManualStockMovement = () => {
+    if (!selectedProduct) return;
+    setMethodModalOpen(false);
+    navigate(`/stock?product=${selectedProduct.id}`);
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const normalizedSellPrice = Number(form.sellPrice ?? 0);
 
     const result = validate(productSchema, {
       name: form.name || '',
       barcode: form.barcode,
       categoryId: form.categoryId || '',
       buyPrice: editing?.buyPrice ?? 0,
-      sellPrice: Number(form.sellPrice),
+      sellPrice: normalizedSellPrice,
       quantity: editing?.quantity ?? 0,
       alertThreshold: Number(form.alertThreshold),
       usage: form.usage,
@@ -110,6 +235,7 @@ export function ProductsPage() {
     }
 
     const now = nowISO();
+    let createdProduct: Product | null = null;
 
     if (editing) {
       const changes: string[] = [];
@@ -120,8 +246,8 @@ export function ProductsPage() {
         const newCat = categories.find((c) => c.id === form.categoryId)?.name ?? '-';
         changes.push(`Categorie : ${oldCat} -> ${newCat}`);
       }
-      if (Number(form.sellPrice) !== editing.sellPrice) {
-        changes.push(`Prix vente : ${formatCurrency(editing.sellPrice)} -> ${formatCurrency(Number(form.sellPrice))}`);
+      if (normalizedSellPrice !== editing.sellPrice) {
+        changes.push(`Prix vente : ${formatCurrency(editing.sellPrice)} -> ${formatCurrency(normalizedSellPrice)}`);
       }
       if (Number(form.alertThreshold) !== editing.alertThreshold) {
         changes.push(`Seuil alerte : ${editing.alertThreshold} -> ${Number(form.alertThreshold)}`);
@@ -134,14 +260,14 @@ export function ProductsPage() {
         name: form.name!,
         barcode: form.barcode || '',
         categoryId: form.categoryId!,
-        sellPrice: Number(form.sellPrice),
+        sellPrice: normalizedSellPrice,
         alertThreshold: Number(form.alertThreshold),
         usage: form.usage || 'achat_vente',
         updatedAt: now,
         syncStatus: 'pending',
       });
 
-      const sellChanged = Number(form.sellPrice) !== editing.sellPrice;
+      const sellChanged = normalizedSellPrice !== editing.sellPrice;
       if (sellChanged) {
         await db.priceHistory.add({
           id: generateId(),
@@ -149,7 +275,7 @@ export function ProductsPage() {
           oldBuyPrice: editing.buyPrice,
           newBuyPrice: editing.buyPrice,
           oldSellPrice: editing.sellPrice,
-          newSellPrice: Number(form.sellPrice),
+          newSellPrice: normalizedSellPrice,
           userId: currentUser?.id,
           createdAt: now,
           updatedAt: now,
@@ -166,66 +292,143 @@ export function ProductsPage() {
       });
     } else {
       const id = generateId();
-      await db.products.add({
+      createdProduct = {
         id,
         name: form.name!,
         barcode: form.barcode || '',
         categoryId: form.categoryId!,
         buyPrice: 0,
-        sellPrice: Number(form.sellPrice),
+        sellPrice: normalizedSellPrice,
         quantity: 0,
         alertThreshold: Number(form.alertThreshold),
         usage: form.usage || 'achat_vente',
         createdAt: now,
         updatedAt: now,
         syncStatus: 'pending',
-      });
+      };
+      await db.products.add(createdProduct);
       await logAction({ action: 'creation', entity: 'produit', entityId: id, entityName: form.name });
     }
 
     setModalOpen(false);
-    toast.success(editing ? 'Produit modifie' : 'Produit ajoute');
+    if (!editing && submitMode === 'save_and_stock' && createdProduct) {
+      setSelectedProduct(createdProduct);
+      openReorderModal(createdProduct);
+      toast.success('Produit ajoute. Vous pouvez maintenant l approvisionner.');
+      return;
+    }
+
+    toast.success(editing ? 'Produit modifié' : 'Produit ajouté');
   };
 
-  const handleDelete = async (id: string) => {
-    const product = await db.products.get(id);
-    if (!product) return;
-  
-    const ok = await confirmAction({
-      title: 'Supprimer le produit',
-      message: `Supprimer le produit "${product.name}" ?\n\nCette action supprimera aussi ses mouvements de stock associés.`,
-      confirmLabel: 'Supprimer',
-      variant: 'danger',
-    });
-    if (!ok) return;
-  
-    // Afficher un toast de chargement
-    const loadingToast = toast.loading('Suppression en cours...');
-  
-    try {
-      const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
-      const now = nowISO();
-  
-      // Utiliser une transaction pour optimiser
-      await db.transaction('rw', [db.products, db.stockMovements], async () => {
-        await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-        
-        for (const mId of movementIds) {
-          await db.stockMovements.update(mId as string, { deleted: true, updatedAt: now, syncStatus: 'pending' });
-          await trackDeletion('stockMovements', mId as string);
-        }
-      });
-  
-      await trackDeletion('products', id);
-      await logAction({ action: 'suppression', entity: 'produit', entityId: id, entityName: product.name });
-  
-      // Fermer le toast de chargement et afficher le succès
-      toast.dismiss(loadingToast);
-      toast.success('Produit supprimé');
-    } catch (error) {
-      toast.dismiss(loadingToast);
-      toast.error('Erreur lors de la suppression');
+  const handleCreateSupplierOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!selectedProduct || orderQty <= 0 || totalAmount <= 0) {
+      toast.error('Verifie les données de la commande (quantite et montant total)');
+      return;
     }
+
+    const now = nowISO();
+    const total = totalAmount;
+
+    let finalSupplierId = supplierId;
+    if (!finalSupplierId) {
+      const fallbackSupplier = suppliers.find((s) => normalizeForSearch(s.name) === normalizeForSearch(FALLBACK_SUPPLIER_NAME));
+      if (fallbackSupplier) {
+        finalSupplierId = fallbackSupplier.id;
+      } else {
+        finalSupplierId = generateId();
+        await db.suppliers.add({
+          id: finalSupplierId,
+          name: FALLBACK_SUPPLIER_NAME,
+          phone: '-',
+          address: '-',
+          creditBalance: 0,
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: 'pending',
+        });
+      }
+    }
+
+    const orderId = generateSupplierOrderRef();
+    await db.supplierOrders.add({
+      id: orderId,
+      supplierId: finalSupplierId,
+      date: now,
+      total,
+      deposit: receiveNow && paymentMode === 'cash' ? total : 0,
+      status: receiveNow ? 'recue' : 'en_attente',
+      isCredit: receiveNow ? paymentMode === 'credit' : false,
+      userId: currentUser?.id,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    await db.orderItems.add({
+      id: generateId(),
+      orderId,
+      productId: selectedProduct.id,
+      productName: selectedProduct.name,
+      quantity: orderQty,
+      unitPrice,
+      total,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+
+    if (receiveNow) {
+      await db.products.update(selectedProduct.id, {
+        quantity: selectedProduct.quantity + orderQty,
+        buyPrice: unitPrice,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.stockMovements.add({
+        id: generateId(),
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        type: 'entree',
+        quantity: orderQty,
+        date: now,
+        reason: `Reception commande fournisseur #${orderId}`,
+        userId: currentUser?.id,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      await db.supplierCreditTransactions.add({
+        id: generateId(),
+        supplierId: finalSupplierId,
+        orderId,
+        amount: total,
+        type: paymentMode === 'credit' ? 'credit' : 'payment',
+        date: now,
+        note: paymentMode === 'credit' ? 'Commande recue a credit' : 'Commande payee',
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+
+      if (paymentMode === 'credit') {
+        const supplier = await db.suppliers.get(finalSupplierId);
+        if (supplier) {
+          await db.suppliers.update(finalSupplierId, {
+            creditBalance: (supplier.creditBalance ?? 0) + total,
+            updatedAt: now,
+            syncStatus: 'pending',
+          });
+        }
+      }
+    }
+
+    setSupplierId('');
+    setReorderModalOpen(false);
+    toast.success(receiveNow ? 'Commande enregistrée et stock mis a jour' : 'Commande fournisseur enregistrée');
   };
 
   return (
@@ -247,14 +450,21 @@ export function ProductsPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              const rows = products.map((p) => [
-                p.name,
-                categories.find((c) => c.id === p.categoryId)?.name ?? '-',
-                formatCurrency(p.sellPrice),
-                p.quantity,
-                p.alertThreshold,
-              ]);
-              exportCSV('produits', ['Nom', 'Categorie', 'Prix vente', 'Stock', 'Seuil alerte'], rows);
+              const headers = ['Nom', 'Categorie'];
+              const rows = products.map((p) => {
+                const row = [
+                  p.name,
+                  categories.find((c) => c.id === p.categoryId)?.name ?? '-',
+                ];
+                if (isGerant) {
+                  headers.push('Prix achat');
+                  row.push(formatCurrency(p.buyPrice));
+                }
+                headers.push('Prix vente', 'Stock', 'Seuil alerte');
+                row.push(formatCurrency(p.sellPrice), p.quantity.toString(), p.alertThreshold.toString());
+                return row;
+              });
+              exportCSV('produits', headers, rows);
               toast.success('Export CSV telecharge');
             }}
             disabled={products.length === 0}
@@ -287,6 +497,7 @@ export function ProductsPage() {
                   await db.products.update(id, { deleted: true, updatedAt: now, syncStatus: 'pending' });
                   const movementIds = await db.stockMovements.where('productId').equals(id).primaryKeys();
                   for (const mId of movementIds) {
+                    await db.stockMovements.where('id').equals(mId).modify({ deleted: true, updatedAt: now, syncStatus: 'pending' });
                     await trackDeletion('stockMovements', mId as string);
                   }
                   await trackDeletion('products', id);
@@ -324,6 +535,17 @@ export function ProductsPage() {
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
+
+        <select
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as ProductStatusFilter)}
+        >
+          <option value="all">Tous les statuts</option>
+          <option value="ok">OK</option>
+          <option value="low">Stock bas</option>
+          <option value="out">Rupture</option>
+        </select>
       </div>
 
       <div className="bg-surface rounded-xl border border-border">
@@ -345,6 +567,7 @@ export function ProductsPage() {
               <Th>Produit</Th>
               <Th>Categorie</Th>
               <Th>Usage</Th>
+              {isGerant && <Th>Prix achat</Th>}
               <Th>Prix vente</Th>
               <Th>Stock</Th>
               <Th>Statut</Th>
@@ -355,7 +578,7 @@ export function ProductsPage() {
           <Tbody>
             {products.length === 0 ? (
               <Tr>
-                <Td colSpan={isGerant ? 8 : 7} className="text-center text-text-muted py-8">
+                <Td colSpan={isGerant ? 9 : 8} className="text-center text-text-muted py-8">
                   Aucun produit trouve
                 </Td>
               </Tr>
@@ -390,27 +613,24 @@ export function ProductsPage() {
                     </Badge>
                   </Td>
 
+                  {isGerant && <Td>{formatCurrency(p.buyPrice)}</Td>}
                   <Td>{formatCurrency(p.sellPrice)}</Td>
                   <Td className="font-semibold">{p.quantity}</Td>
 
-                  <Td>
-                    {p.quantity <= p.alertThreshold ? (
-                      <Badge variant="danger">Stock bas</Badge>
-                    ) : (
-                      <Badge variant="success">OK</Badge>
-                    )}
-                  </Td>
+                  <Td>{renderProductStatusBadge(p)}</Td>
 
                   <Td>
                     <div className="flex gap-1">
+                      <button
+                        onClick={() => openMethodModal(p)}
+                        className="p-1.5 rounded hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+                        title="Choisir comment ravitailler ou modifier le stock"
+                      >
+                        <PackagePlus size={16} className="text-emerald-600" />
+                      </button>
                       <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700">
                         <Pencil size={16} className="text-text-muted" />
                       </button>
-                      {isGerant && (
-                        <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30">
-                          <Trash2 size={16} className="text-danger" />
-                        </button>
-                      )}
                     </div>
                   </Td>
                 </Tr>
@@ -426,45 +646,71 @@ export function ProductsPage() {
         title={editing ? 'Modifier le produit' : 'Nouveau produit'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            id="name"
-            label="Nom du produit"
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="Ex : Riz 5kg, Huile 1L..."
-            required
-          />
+          {!editing && (
+            <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+              <p className="text-sm font-semibold text-text">Ajout rapide produit</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Renseignez l'essentiel maintenant et le stock peut etre ajouté plus tard.
+              </p>
+            </div>
+          )}
 
-          <Input
-            id="barcode"
-            label="Code-barres (optionnel)"
-            value={form.barcode}
-            onChange={(e) => setForm({ ...form, barcode: e.target.value })}
-            placeholder="Ex : 6001234567890"
-          />
-
-          <div className="flex flex-col gap-1">
-            <label htmlFor="categoryId" className="text-sm font-medium text-text">
-              Categorie
-            </label>
-            <select
-              id="categoryId"
-              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
-              value={form.categoryId}
-              onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Input
+              id="name"
+              label="Nom du produit"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Ex : Riz 5kg"
               required
-            >
-              <option value="">Selectionner une categorie</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            />
+
+            <NumberInput
+              id="sellPrice"
+              label="Prix de vente (optionnel)"
+              min={0}
+              value={form.sellPrice ?? ''}
+              onValueChange={(sellPrice) => setForm({ ...form, sellPrice })}
+              onEmptyValueChange={() => setForm({ ...form, sellPrice: undefined })}
+              placeholder="Ex : 3500"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="categoryId" className="text-sm font-medium text-text">
+                Categorie
+              </label>
+              <select
+                id="categoryId"
+                className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                value={form.categoryId}
+                onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
+                required
+              >
+                <option value="">Selectionner une categorie</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <Input
+              id="barcode"
+              label="Code-barres"
+              value={form.barcode}
+              onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+              placeholder="Optionnel"
+            />
           </div>
 
           <div className="flex flex-col gap-1">
             <label htmlFor="usage" className="text-sm font-medium text-text">
-              Usage du produit
+              Usage du produit (optionnel)
             </label>
+            <p className="text-xs text-text-muted">
+              Choisissez simplement si le produit est pour la vente, l'achat, ou les deux.
+            </p>
             <div className="flex gap-2">
               {([
                 { value: 'achat_vente' as const, label: 'Achat & Vente' },
@@ -487,40 +733,245 @@ export function ProductsPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-3">
-            <Input
-              id="sellPrice"
-              label="Prix de vente"
-              type="number"
-              min={0}
-              value={form.sellPrice}
-              onChange={(e) => setForm({ ...form, sellPrice: Number(e.target.value) })}
-              placeholder="Ex : 3500"
-              required
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-3">
-            <Input
-              id="alertThreshold"
-              label="Seuil d'alerte"
-              type="number"
-              min={0}
-              value={form.alertThreshold}
-              onChange={(e) => setForm({ ...form, alertThreshold: Number(e.target.value) })}
-              placeholder="Ex : 5"
-              required
-            />
-          </div>
-          <p className="text-xs text-text-muted">
-            Le stock initial est a 0. Les entrees de stock se font uniquement via reception de commande fournisseur ou retour client.
+          {editing ? (
+            <div className="rounded-xl border border-border bg-surface/60 px-4 py-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-text">Seuil d'alerte stock</p>
+                  <p className="text-xs text-text-muted">Quand alerter que le stock devient bas.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[0, 5, 10, 20].map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setForm({ ...form, alertThreshold: value })}
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        Number(form.alertThreshold) === value
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border text-text-muted hover:bg-slate-50 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <NumberInput
+                id="alertThreshold"
+                label="Seuil d'alerte"
+                min={0}
+                value={form.alertThreshold}
+                onValueChange={(alertThreshold) => setForm({ ...form, alertThreshold })}
+                placeholder="Ex : 5"
+                required
+              />
+            </div>
+          ) : null}
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
+            Le stock initial est à 0. Les entrées de stock se font uniquement via reception de commande fournisseur ou par ajustement/retour client.
           </p>
 
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
               Annuler
             </Button>
-            <Button type="submit">{editing ? 'Modifier' : 'Ajouter'}</Button>
+            {!editing && (
+              <Button
+                type="submit"
+                variant="secondary"
+                className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                onClick={() => setSubmitMode('save_and_stock')}
+              >
+                Approvisionner
+              </Button>
+            )}
+            <Button type="submit" onClick={() => setSubmitMode('save')}>
+              {editing ? 'Modifier' : 'Ajouter'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={methodModalOpen}
+        onClose={() => setMethodModalOpen(false)}
+        title={`Approvisionnement: ${selectedProduct?.name ?? ''}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-muted">
+            Choisissez la methode pour ravitailler ou modifier le stock de ce produit.
+          </p>
+
+          <button
+            type="button"
+            onClick={handleChooseSupplierOrder}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Commande fournisseur</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Créer une commande d'achat, en attente ou recue immediatement.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleChooseManualStockMovement}
+            className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <p className="text-sm font-semibold text-text">Ajustement ou retour client</p>
+            <p className="text-xs text-text-muted mt-0.5">
+              Ouvrir le formulaire des mouvements de stock pour corriger le stock.
+            </p>
+          </button>
+
+          <div className="flex justify-end pt-2">
+            <Button variant="secondary" type="button" onClick={() => setMethodModalOpen(false)}>
+              Fermer
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={reorderModalOpen}
+        onClose={() => setReorderModalOpen(false)}
+        title={`Commander: ${selectedProduct?.name ?? ''}`}
+      >
+        <form onSubmit={handleCreateSupplierOrder} className="space-y-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-text">Fournisseur (optionnel)</label>
+            <select
+              className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              <option value="">selectionnez un fournisseur</option>
+              {selectableSuppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted">
+              Si vous laissez vide, la commande sera rattachée a un fournisseur non renseigné.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Quantite</label>
+              <NumberInput
+                min={1}
+                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+                value={orderQty}
+                onValueChange={handleOrderQtyChange}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Montant total (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'total' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={totalAmount || ''}
+                  onValueChange={handleTotalAmountChange}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-text">Prix unitaire (FCFA)</label>
+              <div className="relative">
+                <Calculator size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                <NumberInput
+                  min={0}
+                  step="any"
+                  className={`w-full pl-11 pr-3 rounded-lg border bg-surface text-text py-2 text-sm ${
+                    amountEntryMode === 'unit' ? 'border-primary ring-2 ring-primary/15' : 'border-border'
+                  }`}
+                  value={unitPrice || ''}
+                  onValueChange={handleUnitPriceChange}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-text-muted">Remplissez le montant total ou le prix unitaire, l'autre se calcule automatiquement.</p>
+          {orderQty > 0 && totalAmount > 0 && unitPrice > 0 && (
+            <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+                  {amountEntryMode === 'total' ? 'Prix unitaire calcule :' : 'Montant total calcule :'}
+                </span>
+                <span className="text-lg font-bold text-blue-800 dark:text-blue-300">
+                  {(amountEntryMode === 'total' ? unitPrice : totalAmount).toFixed(0)} FCFA
+                </span>
+              </div>
+              <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                La commande enregistrera un prix d'achat unitaire de {unitPrice.toFixed(0)} FCFA.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text">Traitement</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setReceiveNow(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  !receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                En attente
+              </button>
+              <button
+                type="button"
+                onClick={() => setReceiveNow(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                  receiveNow ? 'border-primary bg-primary/10 text-primary' : 'border-border text-text-muted'
+                }`}
+              >
+                Reçue maintenant
+              </button>
+            </div>
+          </div>
+
+          {receiveNow && (
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium text-text">Paiement fournisseur</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('cash')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  Payée 
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('credit')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border ${
+                    paymentMode === 'credit' ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border text-text-muted'
+                  }`}
+                >
+                  A credit
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setReorderModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">Enregistrer commande</Button>
           </div>
         </form>
       </Modal>

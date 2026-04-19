@@ -2,6 +2,11 @@ import { db } from '@/db';
 import { useAuthStore } from '@/stores/authStore';
 import { v4 as uuidv4 } from 'uuid';
 
+const SYNC_PENDING_EVENT = 'gestionstore:pending-change';
+const DEFAULT_AUTO_SYNC_INTERVAL_MS = 5000;
+const QUICK_SYNC_DELAY_MS = 1200;
+const MAX_LAST_SYNC_AHEAD_MS = 5 * 60 * 1000;
+
 const TABLES = [
   'categories',
   'products',
@@ -15,6 +20,7 @@ const TABLES = [
   'creditTransactions',
   'auditLogs',
   'expenses',
+  'capitalEntries',
   'customerOrders',
   'customerOrderItems',
   'priceHistory',
@@ -24,7 +30,7 @@ const TABLES = [
 type TableName = (typeof TABLES)[number];
 
 function getTable(name: TableName) {
-  return db[name];
+  return db[name] as any;
 }
 
 function getServerCandidates(): string[] {
@@ -35,6 +41,33 @@ function getServerCandidates(): string[] {
 
 export function getServerUrl(): string {
   return getServerCandidates()[0] || window.location.origin;
+}
+
+function isValidIsoDate(value: string): boolean {
+  return !Number.isNaN(Date.parse(value));
+}
+
+function getSafeLastSync(tableName: TableName): string | undefined {
+  const key = `lastSync_${tableName}`;
+  const raw = localStorage.getItem(key);
+  if (!raw) return undefined;
+  if (!isValidIsoDate(raw)) {
+    localStorage.removeItem(key);
+    return undefined;
+  }
+
+  const ts = Date.parse(raw);
+  if (ts > Date.now() + MAX_LAST_SYNC_AHEAD_MS) {
+    // Device clock drift can lock pulls for hours/days if lastSync is in the future.
+    localStorage.removeItem(key);
+    return undefined;
+  }
+
+  return raw;
+}
+
+export function resetSyncCursors() {
+  for (const t of TABLES) localStorage.removeItem(`lastSync_${t}`);
 }
 
 function getAuthHeaders(): Record<string, string> {
@@ -52,6 +85,7 @@ export async function trackDeletion(table: string, recordId: string): Promise<vo
     recordId,
     deletedAt: new Date().toISOString(),
   });
+  notifyPendingChange();
 }
 
 export async function syncAll(options?: { force?: boolean }): Promise<{ success: boolean; error?: string; pulled?: number }> {
@@ -65,7 +99,7 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
   }
 
   if (options?.force) {
-    for (const t of TABLES) localStorage.removeItem(`lastSync_${t}`);
+    resetSyncCursors();
   }
 
   try {
@@ -79,9 +113,9 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
         ? await table.toArray()
         : await table.where('syncStatus').equals('pending').toArray();
       const pendingRecords = pendingRecordsRaw.filter(
-        (record) => !(record as { deleted?: boolean }).deleted
+        (record: unknown) => !(record as { deleted?: boolean }).deleted
       );
-      const lastSync = localStorage.getItem(`lastSync_${tableName}`);
+      const lastSync = getSafeLastSync(tableName);
 
       const tableDeletions = pendingDeletions.filter((d) => d.table === tableName);
       const tableDeletionIds = tableDeletions.map((d) => d.recordId);
@@ -129,24 +163,28 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
       localStorage.setItem('sync_server_url', usedServerUrl);
     }
 
+    const serverNow =
+      typeof data.serverTime === 'string' && isValidIsoDate(data.serverTime)
+        ? data.serverTime
+        : new Date().toISOString();
+
     let totalPulled = 0;
-    const now = new Date().toISOString();
     for (const tableName of TABLES) {
       const result = data.results?.[tableName];
       if (!result) continue;
 
       const table = getTable(tableName);
       const pending = await table.where('syncStatus').equals('pending').toArray();
-      const pendingIds = new Set(
+      const pendingIds = new Set<string>(
         pending
-          .map((record) => (record as { id?: string }).id)
-          .filter((id): id is string => typeof id === 'string')
+          .map((record: unknown) => (record as { id?: string }).id)
+          .filter((id: string | undefined): id is string => typeof id === 'string')
       );
       const serverPushedIds: string[] = Array.isArray(result.pushedIds)
-        ? result.pushedIds
+        ? (result.pushedIds as string[])
         : [];
       const serverFailedPushIds: string[] = Array.isArray(result.failedPushIds)
-        ? result.failedPushIds
+        ? (result.failedPushIds as string[])
         : [];
 
       let confirmedPushedIds = serverPushedIds.filter((id) => pendingIds.has(id));
@@ -165,7 +203,7 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
       for (const recordId of confirmedPushedIds) {
         await table.update(recordId, {
           syncStatus: 'synced',
-          lastSyncedAt: now,
+          lastSyncedAt: serverNow,
         } as never);
       }
 
@@ -204,7 +242,7 @@ export async function syncAll(options?: { force?: boolean }): Promise<{ success:
       }
 
       if (storedCount > 0 || pulledRows.length === 0) {
-        localStorage.setItem(`lastSync_${tableName}`, now);
+        localStorage.setItem(`lastSync_${tableName}`, serverNow);
       }
     }
 
@@ -223,19 +261,107 @@ export async function getPendingCount(): Promise<number> {
 }
 
 let syncInterval: ReturnType<typeof setInterval> | null = null;
+let quickSyncTimeout: ReturnType<typeof setTimeout> | null = null;
+let autoSyncRunning = false;
+let autoSyncQueued = false;
+let autoSyncEnabled = false;
+let pendingChangeHandler: (() => void) | null = null;
+let onlineHandler: (() => void) | null = null;
+let visibilityHandler: (() => void) | null = null;
 
-export function startAutoSync(intervalMs = 30000) {
-  stopAutoSync();
-  syncInterval = setInterval(() => {
-    if (navigator.onLine && getServerCandidates().length > 0) {
-      syncAll().catch(console.error);
+function canAutoSyncNow(): boolean {
+  const token = useAuthStore.getState().token;
+  return !!token && token !== 'offline-token' && navigator.onLine && getServerCandidates().length > 0;
+}
+
+async function runAutoSyncOnce() {
+  if (!autoSyncEnabled || !canAutoSyncNow()) return;
+
+  if (autoSyncRunning) {
+    autoSyncQueued = true;
+    return;
+  }
+
+  autoSyncRunning = true;
+  try {
+    await syncAll();
+  } catch (err) {
+    console.error('Auto sync error:', err);
+  } finally {
+    autoSyncRunning = false;
+    if (autoSyncQueued) {
+      autoSyncQueued = false;
+      void runAutoSyncOnce();
     }
+  }
+}
+
+function scheduleQuickSync(delayMs = QUICK_SYNC_DELAY_MS) {
+  if (!autoSyncEnabled) return;
+  if (quickSyncTimeout) clearTimeout(quickSyncTimeout);
+  quickSyncTimeout = setTimeout(() => {
+    quickSyncTimeout = null;
+    void runAutoSyncOnce();
+  }, delayMs);
+}
+
+export function notifyPendingChange() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(SYNC_PENDING_EVENT));
+}
+
+export function startAutoSync(intervalMs = DEFAULT_AUTO_SYNC_INTERVAL_MS) {
+  stopAutoSync();
+
+  autoSyncEnabled = true;
+
+  if (typeof window !== 'undefined') {
+    pendingChangeHandler = () => scheduleQuickSync();
+    onlineHandler = () => scheduleQuickSync(300);
+    visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleQuickSync(300);
+      }
+    };
+
+    window.addEventListener(SYNC_PENDING_EVENT, pendingChangeHandler);
+    window.addEventListener('online', onlineHandler);
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
+
+  syncInterval = setInterval(() => {
+    void runAutoSyncOnce();
   }, intervalMs);
+
+  scheduleQuickSync(250);
 }
 
 export function stopAutoSync() {
+  autoSyncEnabled = false;
+  autoSyncQueued = false;
+
   if (syncInterval) {
     clearInterval(syncInterval);
     syncInterval = null;
+  }
+
+  if (quickSyncTimeout) {
+    clearTimeout(quickSyncTimeout);
+    quickSyncTimeout = null;
+  }
+
+  if (typeof window !== 'undefined') {
+    if (pendingChangeHandler) {
+      window.removeEventListener(SYNC_PENDING_EVENT, pendingChangeHandler);
+      pendingChangeHandler = null;
+    }
+    if (onlineHandler) {
+      window.removeEventListener('online', onlineHandler);
+      onlineHandler = null;
+    }
+    if (visibilityHandler) {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+      visibilityHandler = null;
+    }
   }
 }
