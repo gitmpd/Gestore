@@ -364,39 +364,38 @@ export function ReportsPage() {
 
   const netProfitSimple = totalRevenue - totalExpenses;
 
-  // Récupérer la date de la première vente (la plus ancienne)
-const firstSaleDate = useMemo(() => {
-  const completedSales = sales.filter(s => s.status === 'completed' && !s.deleted);
-  if (completedSales.length === 0) return null;
-  const firstSale = completedSales.reduce((earliest, sale) => 
-    new Date(sale.date) < new Date(earliest.date) ? sale : earliest
-  );
-  return firstSale.date; // string ISO
-}, [sales]);
+   // Récupérer le createdAt de la première vente (le plus ancien)
+  const firstSaleCreatedAt = useMemo(() => {
+    const completedSales = sales.filter(s => s.status === 'completed' && !s.deleted);
+    if (completedSales.length === 0) return null;
+    const firstSale = completedSales.reduce((earliest, sale) =>
+      new Date(sale.createdAt).getTime() < new Date(earliest.createdAt).getTime() ? sale : earliest
+    );
+    return firstSale.createdAt; // chaîne ISO
+  }, [sales]);
 
-// Calculer le capital initial = somme des achats effectués avant la première vente
-const initialCapital = useMemo(() => {
-  if (!firstSaleDate) return 0;
+  // Calculer le capital initial = somme des achats dont createdAt < firstSaleCreatedAt
+  const initialCapital = useMemo(() => {
+    if (!firstSaleCreatedAt) return 0;
+    const firstTime = new Date(firstSaleCreatedAt).getTime();
 
-  // 1. Dépenses manuelles (achats de produits) avant la première vente
-  const manualAchats = allExpenses
-    .filter(e => !e.deleted && e.date < firstSaleDate)
-    .reduce((sum, e) => sum + e.amount, 0);
+    // 1. Dépenses manuelles avant la première vente
+    const manualAchats = allExpenses
+      .filter(e => !e.deleted && new Date(e.createdAt).getTime() < firstTime)
+      .reduce((sum, e) => sum + e.amount, 0);
 
-  // 2. Paiements aux fournisseurs (commandes) avant la première vente
-  const supplierPaymentsBefore = supplierCreditTransactions
-    .filter(t => !t.deleted && t.type === 'payment' && t.date < firstSaleDate)
-    .reduce((sum, t) => sum + t.amount, 0);
+    // 2. Paiements fournisseurs avant la première vente
+    const supplierPaymentsBefore = supplierCreditTransactions
+      .filter(t => !t.deleted && t.type === 'payment' && new Date(t.createdAt).getTime() < firstTime)
+      .reduce((sum, t) => sum + t.amount, 0);
 
-  // 3. Éventuellement, les apports en capital spécifiques à l'achat initial
-  //    Si vous utilisez capitalEntries pour cela, vous pouvez les ajouter :
-  const capitalForAchats = capitalEntries
-    .filter(e => !e.deleted && e.date < firstSaleDate)
-    .reduce((sum, e) => sum + e.amount, 0);
+    // 3. Apports en capital avant la première vente
+    const capitalForAchats = capitalEntries
+      .filter(e => !e.deleted && new Date(e.createdAt).getTime() < firstTime)
+      .reduce((sum, e) => sum + e.amount, 0);
 
-  // Retourner la somme de tous ces achats initiaux
-  return manualAchats + supplierPaymentsBefore + capitalForAchats;
-}, [firstSaleDate, allExpenses, supplierCreditTransactions, capitalEntries]);
+    return manualAchats + supplierPaymentsBefore + capitalForAchats;
+  }, [firstSaleCreatedAt, allExpenses, supplierCreditTransactions, capitalEntries]);
 
   // Solde de caisse = résultat net + capital initial
   const cashBalance = netProfitSimple + initialCapital;
