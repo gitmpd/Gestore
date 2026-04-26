@@ -56,6 +56,7 @@ export function StockPage() {
   const [typeFilter, setTypeFilter] = useState<StockMovementType | 'all'>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const hasFilters = stockSearch || typeFilter !== 'all' || dateFrom || dateTo;
 
   useEffect(() => {
     const preselect = searchParams.get('product');
@@ -70,7 +71,10 @@ export function StockPage() {
     }
   }, [searchParams, setSearchParams]);
 
-  const movements = useLiveQuery(async () => (await db.stockMovements.orderBy('date').reverse().limit(200).toArray()).filter((m) => !(m as any).deleted)) ?? [];
+  const movements = useLiveQuery(async () => 
+  (await db.stockMovements.orderBy('date').reverse().toArray())
+    .filter((m) => !(m as any).deleted)
+) ?? [];
 
   const products = useLiveQuery(async () => (await db.products.orderBy('name').toArray()).filter((p) => !p.deleted)) ?? [];
   const users = useLiveQuery(async () => (await db.users.toArray()).filter((u) => !u.deleted)) ?? [];
@@ -79,8 +83,14 @@ export function StockPage() {
   const filteredMovements = useMemo(() => {
     return movements.filter((m) => {
       if (typeFilter !== 'all' && m.type !== typeFilter) return false;
-      if (dateFrom && m.date < dateFrom) return false;
-      if (dateTo && m.date > dateTo + 'T23:59:59') return false;
+
+      const from = dateFrom ? new Date(dateFrom) : null;
+      const to = dateTo ? new Date(dateTo + 'T23:59:59') : null;
+      const mDate = new Date(m.date);
+
+      if (from && mDate < from) return false;
+      if (to && mDate > to) return false;
+
       if (stockSearch) {
         const q = normalizeForSearch(stockSearch);
         return (
@@ -168,6 +178,13 @@ export function StockPage() {
     toast.success(`Mouvement de stock enregistré`);
   };
 
+  const clearFilters = () => {
+    setStockSearch('');
+    setTypeFilter('all');
+    setDateFrom('');
+    setDateTo('');
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -241,6 +258,14 @@ export function StockPage() {
           onChange={(e) => setDateTo(e.target.value)}
           title="Date fin"
         />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={clearFilters}
+          disabled={!hasFilters}
+        >
+          Effacer
+        </Button>
       </div>
 
       <div className="bg-surface rounded-xl border border-border">

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { ScrollText, Filter, Download, ArrowLeft } from 'lucide-react';
@@ -65,6 +65,7 @@ const entityLabels: Record<AuditEntity, string> = {
 };
 
 export function AuditPage() {
+  const PAGE_SIZE = 50;
   const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
   const [search, setSearch] = useState('');
@@ -75,6 +76,7 @@ export function AuditPage() {
   const [dateTo, setDateTo] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const [page, setPage] = useState(1);
 
   const users = useLiveQuery(async () => (await db.users.orderBy('name').toArray()).filter((u) => !u.deleted)) ?? [];
   const userMap = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
@@ -131,6 +133,22 @@ export function AuditPage() {
     });
   }, [search, actionFilter, entityFilter, userFilter, dateFrom, dateTo, userMap, scopedManagerIds]) ?? [];
 
+  const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
+  const paginatedLogs = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return logs.slice(start, start + PAGE_SIZE);
+  }, [logs, page]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, actionFilter, entityFilter, userFilter, dateFrom, dateTo]);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
   const exportCSV = () => {
     const headers = ['Date', 'Utilisateur', 'Action', 'Entité', 'Nom', 'Détails'];
     const rows = logs.map((l) => [
@@ -158,6 +176,8 @@ export function AuditPage() {
     setUserFilter('');
     setDateFrom('');
     setDateTo('');
+    setDatePreset('');
+    setPage(1);
   };
 
   const hasFilters = actionFilter || entityFilter || userFilter || dateFrom || dateTo || search;
@@ -285,11 +305,39 @@ export function AuditPage() {
         >
           Ce mois
         </Button>
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateFrom}
+          onChange={(e) => {
+            setDateFrom(e.target.value);
+            setDatePreset('');
+          }}
+          title="Date debut"
+        />
+        <input
+          type="date"
+          className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
+          value={dateTo}
+          onChange={(e) => {
+            setDateTo(e.target.value);
+            setDatePreset('');
+          }}
+          title="Date fin"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={clearFilters}
+          disabled={!hasFilters}
+        >
+          Effacer
+        </Button>
       </div>
 
       {showFilters && (
         <div className="bg-surface p-4 rounded-xl border border-border">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-text-muted">Utilisateur</label>
               <select
@@ -329,40 +377,32 @@ export function AuditPage() {
                 ))}
               </select>
             </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-text-muted">Date début</label>
-              <input
-                type="date"
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-text-muted">Date fin</label>
-              <input
-                type="date"
-                className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-              />
-            </div>
           </div>
-          {hasFilters && (
-            <button
-              onClick={clearFilters}
-              className="mt-3 text-xs text-primary hover:underline"
-            >
-              Réinitialiser les filtres
-            </button>
-          )}
         </div>
       )}
 
       <div className="flex items-center justify-between">
         <p className="text-sm text-text-muted">
-          {logs.length} entrée{logs.length !== 1 ? 's' : ''}
+          {logs.length} entrée{logs.length !== 1 ? 's' : ''} - page {page}/{totalPages}
         </p>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+          >
+            Précédent
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+          >
+            Suivant
+          </Button>
+        </div>
       </div>
 
       <div className="bg-surface rounded-xl border border-border">
@@ -385,7 +425,7 @@ export function AuditPage() {
                 </Td>
               </Tr>
             ) : (
-              logs.slice(0, 200).map((log) => (
+              paginatedLogs.map((log) => (
                 <Tr
                   key={log.id}
                   className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
@@ -431,3 +471,5 @@ export function AuditPage() {
     </div>
   );
 }
+
+
