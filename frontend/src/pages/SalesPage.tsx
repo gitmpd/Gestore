@@ -278,6 +278,43 @@ export function SalesPage() {
   return map;
 }, []) ?? new Map();
 
+  const saleCreditRemainingMap = useLiveQuery(async () => {
+    const transactions = (await db.creditTransactions.toArray())
+      .filter((tx) => !tx.deleted)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const map = new Map<string, number>();
+    const debtsByCustomer = new Map<string, { saleId: string; remaining: number }[]>();
+
+    transactions.forEach((tx) => {
+      const debts = debtsByCustomer.get(tx.customerId) ?? [];
+
+      if (tx.type === 'credit') {
+        if (tx.saleId) {
+          debts.push({ saleId: tx.saleId, remaining: tx.amount });
+          map.set(tx.saleId, tx.amount);
+        }
+        debtsByCustomer.set(tx.customerId, debts);
+        return;
+      }
+
+      let paymentRemaining = tx.amount;
+      for (const debt of debts) {
+        if (paymentRemaining <= 0) break;
+        const paid = Math.min(debt.remaining, paymentRemaining);
+        debt.remaining -= paid;
+        paymentRemaining -= paid;
+        map.set(debt.saleId, debt.remaining);
+      }
+    });
+
+    return map;
+  }, []) ?? new Map<string, number>();
+
+  const getSaleCreditRemaining = (sale: Sale) => {
+    if (sale.paymentMethod !== 'credit' || sale.status !== 'completed') return null;
+    return saleCreditRemainingMap.get(sale.id) ?? sale.total;
+  };
+
   const getSaleProfit = (sale: Sale) => {
     const items = saleItemsMap.get(sale.id) ?? [];
     return items.reduce((sum: number, item: SaleItemType) => {
@@ -1469,6 +1506,7 @@ export function SalesPage() {
         <div className="grid gap-3 lg:hidden">
           {paginatedSales.map((s) => {
             const items = saleItemsMap.get(s.id) ?? [];
+            const creditRemaining = getSaleCreditRemaining(s);
             return (
               <div
                 key={s.id}
@@ -1479,6 +1517,11 @@ export function SalesPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-semibold text-text">{formatCurrency(s.total)}</p>
+                    {creditRemaining !== null && creditRemaining > 0 && (
+                      <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                        Reste: {formatCurrency(creditRemaining)}
+                      </p>
+                    )}
                     <p className="text-xs text-text-muted">Ref: {s.id}</p>
                     <p className="text-sm text-text-muted">{formatDateTime(s.date)}</p>
                   </div>
@@ -1668,7 +1711,19 @@ export function SalesPage() {
                     <Td className="text-sm">{getSellerName(s)}</Td>
                   )}
                   <Td>{s.customerId ? customerMap.get(s.customerId) ?? '—' : '—'}</Td>
-                  <Td className="font-semibold whitespace-nowrap">{formatCurrency(s.total)}</Td>
+                  <Td className="whitespace-nowrap">
+                    <div className="leading-tight">
+                      <div className="font-semibold text-text">{formatCurrency(s.total)}</div>
+                      {(() => {
+                        const creditRemaining = getSaleCreditRemaining(s);
+                        return creditRemaining !== null && creditRemaining > 0 ? (
+                          <div className="mt-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                            Reste: {formatCurrency(creditRemaining)}
+                          </div>
+                        ) : null;
+                      })()}
+                    </div>
+                  </Td>
                   {isGerant && (
                     <Td className="font-medium whitespace-nowrap">
                       {formatCurrency(getSalePurchaseCost(s))}
