@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { lazy, Suspense, Component, type ReactNode } from 'react';
+import { lazy, Suspense, Component, useEffect, type ReactNode } from 'react';
 import { Toaster } from 'sonner';
 import { useAuthStore } from '@/stores/authStore';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -7,6 +7,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { LoginPage } from '@/pages/LoginPage';
 import { ChangePasswordPage } from '@/pages/ChangePasswordPage';
 import { DashboardPage } from '@/pages/DashboardPage';
+import { processRecurringExpenses } from '@/services/recurringExpensesService';
 
 const ProductsPage = lazy(() => import('@/pages/ProductsPage').then(m => ({ default: m.ProductsPage })));
 const StockPage = lazy(() => import('@/pages/StockPage').then(m => ({ default: m.StockPage })));
@@ -82,6 +83,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 }
 
 export default function App() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const userRole = useAuthStore((s) => s.user?.role);
+
+  useEffect(() => {
+    if (!isAuthenticated || userRole !== 'gerant') return;
+    void processRecurringExpenses();
+  }, [isAuthenticated, userRole]);
+
   return (
     <ErrorBoundary>
     <Toaster position="top-right" richColors closeButton duration={3500} />

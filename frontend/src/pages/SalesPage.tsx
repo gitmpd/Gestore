@@ -298,8 +298,20 @@ export function SalesPage() {
       }
 
       let paymentRemaining = tx.amount;
+      if (tx.saleId) {
+        const targetedDebt = debts.find((debt) => debt.saleId === tx.saleId && debt.remaining > 0);
+        if (targetedDebt) {
+          const paid = Math.min(targetedDebt.remaining, paymentRemaining);
+          targetedDebt.remaining -= paid;
+          paymentRemaining -= paid;
+          map.set(targetedDebt.saleId, targetedDebt.remaining);
+        }
+      }
+
       for (const debt of debts) {
         if (paymentRemaining <= 0) break;
+        if (debt.remaining <= 0) continue;
+
         const paid = Math.min(debt.remaining, paymentRemaining);
         debt.remaining -= paid;
         paymentRemaining -= paid;

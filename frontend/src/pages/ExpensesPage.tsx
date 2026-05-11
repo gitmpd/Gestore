@@ -1,4 +1,4 @@
-import { useState, useMemo, type FormEvent } from 'react';
+import { useEffect, useState, useMemo, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -19,6 +19,7 @@ import { expenseSchema, validate } from '@/lib/validation';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { trackDeletion } from '@/services/syncService';
+import { processRecurringExpenses } from '@/services/recurringExpensesService';
 
 export const expenseCategoryLabels: Record<ExpenseCategory, string> = {
   loyer: 'Loyer',
@@ -91,6 +92,16 @@ export function ExpensesPage() {
   const allExpenses = useLiveQuery(() => db.expenses.orderBy('date').reverse().toArray()) ?? [];
   const allUsers = useLiveQuery(async () => (await db.users.toArray()).filter((u) => !u.deleted)) ?? [];
   const userMap = new Map(allUsers.map((u) => [u.id, u.name]));
+
+  useEffect(() => {
+    if (!isGerant) return;
+
+    void processRecurringExpenses().then((created) => {
+      if (created > 0) {
+        toast.success(`${created} dépense(s) récurrente(s) ajoutée(s)`);
+      }
+    });
+  }, [isGerant]);
 
   const filterDate = useMemo(() => getFilterDate(period), [period]);
 

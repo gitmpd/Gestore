@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Plus, Search, Pencil, Trash2, CreditCard, ArrowLeft } from 'lucide-react';
 import { db } from '@/db';
-import type { Customer } from '@/types';
+import type { CreditTransaction, Customer, Sale, SaleItem } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -18,6 +18,56 @@ import { confirmAction } from '@/stores/confirmStore';
 import { trackDeletion } from '@/services/syncService';
 
 type CreditFilter = 'all' | 'with-credit' | 'without-credit';
+
+type CustomerCreditSale = {
+  sale: Sale;
+  items: SaleItem[];
+  remaining: number;
+};
+
+const getCreditRemainingBySale = (transactions: CreditTransaction[]) => {
+  const map = new Map<string, number>();
+  const debtsByCustomer = new Map<string, { saleId: string; remaining: number }[]>();
+
+  transactions
+    .filter((t) => !t.deleted)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .forEach((tx) => {
+      const debts = debtsByCustomer.get(tx.customerId) ?? [];
+
+      if (tx.type === 'credit') {
+        if (tx.saleId) {
+          debts.push({ saleId: tx.saleId, remaining: tx.amount });
+          map.set(tx.saleId, tx.amount);
+        }
+        debtsByCustomer.set(tx.customerId, debts);
+        return;
+      }
+
+      let paymentRemaining = tx.amount;
+      if (tx.saleId) {
+        const targetedDebt = debts.find((debt) => debt.saleId === tx.saleId && debt.remaining > 0);
+        if (targetedDebt) {
+          const paid = Math.min(targetedDebt.remaining, paymentRemaining);
+          targetedDebt.remaining -= paid;
+          paymentRemaining -= paid;
+          map.set(targetedDebt.saleId, targetedDebt.remaining);
+        }
+      }
+
+      for (const debt of debts) {
+        if (paymentRemaining <= 0) break;
+        if (debt.remaining <= 0) continue;
+
+        const paid = Math.min(debt.remaining, paymentRemaining);
+        debt.remaining -= paid;
+        paymentRemaining -= paid;
+        map.set(debt.saleId, debt.remaining);
+      }
+    });
+
+  return map;
+};
 
 const emptyCustomer = (): Partial<Customer> => ({
   name: '',
@@ -38,6 +88,7 @@ export function CustomersPage() {
   const [creditAmount, setCreditAmount] = useState(0);
   const [creditType, setCreditType] = useState<'credit' | 'payment'>('payment');
   const [creditNote, setCreditNote] = useState('');
+  const [selectedCreditSaleId, setSelectedCreditSaleId] = useState<string | null>(null);
 
   const customers = useLiveQuery(async () => {
     const all = await db.customers.toArray();
@@ -52,7 +103,16 @@ export function CustomersPage() {
             normalizeForSearch(c.name).includes(normalizeForSearch(search)) ||
             c.phone.includes(search))
       )
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => {
+        const aHasCredit = a.creditBalance > 0;
+        const bHasCredit = b.creditBalance > 0;
+
+        if (aHasCredit !== bHasCredit) {
+          return aHasCredit ? -1 : 1;
+        }
+
+        return a.name.localeCompare(b.name);
+      });
   }, [search, creditFilter]) ?? [];
 
   const customerTransactions = useLiveQuery(async () => {
@@ -62,6 +122,38 @@ export function CustomersPage() {
       .equals(selectedCustomer.id)
       .reverse()
       .sortBy('date')).filter((t) => !t.deleted);
+  }, [selectedCustomer]) ?? [];
+
+  const customerCreditSales = useLiveQuery(async (): Promise<CustomerCreditSale[]> => {
+    if (!selectedCustomer) return [];
+
+    const sales = (await db.sales.where('customerId').equals(selectedCustomer.id).toArray()).filter(
+      (sale) => !sale.deleted && sale.status === 'completed' && sale.paymentMethod === 'credit'
+    );
+    const saleIds = sales.map((sale) => sale.id);
+    if (saleIds.length === 0) return [];
+
+    const [items, transactions] = await Promise.all([
+      db.saleItems.where('saleId').anyOf(saleIds).toArray(),
+      db.creditTransactions.where('customerId').equals(selectedCustomer.id).toArray(),
+    ]);
+    const itemsBySale = new Map<string, SaleItem[]>();
+    items
+      .filter((item) => !item.deleted)
+      .forEach((item) => {
+        itemsBySale.set(item.saleId, [...(itemsBySale.get(item.saleId) ?? []), item]);
+      });
+
+    const remainingBySale = getCreditRemainingBySale(transactions);
+
+    return sales
+      .map((sale) => ({
+        sale,
+        items: itemsBySale.get(sale.id) ?? [],
+        remaining: Math.max(0, remainingBySale.get(sale.id) ?? sale.total),
+      }))
+      .filter((entry) => entry.remaining > 0)
+      .sort((a, b) => b.sale.date.localeCompare(a.sale.date));
   }, [selectedCustomer]) ?? [];
 
   const openAdd = () => {
@@ -81,6 +173,7 @@ export function CustomersPage() {
     setCreditAmount(0);
     setCreditNote('');
     setCreditType('payment');
+    setSelectedCreditSaleId(null);
     setCreditModalOpen(true);
   };
 
@@ -144,6 +237,7 @@ export function CustomersPage() {
       amount: creditAmount,
       type: creditType,
       date: now,
+      saleId: creditType === 'payment' ? selectedCreditSaleId ?? undefined : undefined,
       note: creditNote,
       createdAt: now,
       updatedAt: now,
@@ -159,6 +253,13 @@ export function CustomersPage() {
     });
 
     setCreditModalOpen(false);
+  };
+
+  const selectCreditSalePayment = (creditSale: CustomerCreditSale) => {
+    setSelectedCreditSaleId(creditSale.sale.id);
+    setCreditType('payment');
+    setCreditAmount(creditSale.remaining);
+    setCreditNote(`Paiement vente #${creditSale.sale.id}`);
   };
 
   const handleDelete = async (id: string) => {
@@ -317,7 +418,7 @@ export function CustomersPage() {
         open={creditModalOpen}
         onClose={() => setCreditModalOpen(false)}
         title={`Crédit — ${selectedCustomer?.name}`}
-        className="max-w-xl"
+        className="max-w-3xl"
       >
         <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
           <p className="text-sm text-text-muted">Solde crédit actuel</p>
@@ -326,11 +427,59 @@ export function CustomersPage() {
           </p>
         </div>
 
+        {customerCreditSales.length > 0 && (
+          <div className="mb-5 border border-border rounded-lg overflow-hidden">
+            <div className="bg-slate-50 dark:bg-slate-800 px-3 py-2">
+              <h4 className="text-sm font-semibold text-text">Produits vendus à crédit non payés</h4>
+            </div>
+            <div className="divide-y divide-border max-h-72 overflow-y-auto">
+              {customerCreditSales.map((entry) => (
+                <div key={entry.sale.id} className="p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-text">Vente #{entry.sale.id}</span>
+                        <Badge variant="warning">Reste {formatCurrency(entry.remaining)}</Badge>
+                      </div>
+                      <p className="text-xs text-text-muted mt-0.5">{formatDateTime(entry.sale.date)}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => selectCreditSalePayment(entry)}
+                    >
+                      Payer
+                    </Button>
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    {entry.items.length > 0 ? (
+                      entry.items.map((item) => (
+                        <div key={item.id} className="flex justify-between gap-3 text-sm">
+                          <span className="text-text-muted">
+                            {item.productName} x{item.quantity}
+                          </span>
+                          <span className="font-medium text-text">{formatCurrency(item.total)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-text-muted">Aucun détail produit trouvé pour cette vente.</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <form onSubmit={handleCreditSubmit} className="space-y-4">
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => setCreditType('payment')}
+              onClick={() => {
+                setCreditType('payment');
+                setSelectedCreditSaleId(null);
+              }}
               className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
                 creditType === 'payment'
                   ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
@@ -341,7 +490,10 @@ export function CustomersPage() {
             </button>
             <button
               type="button"
-              onClick={() => setCreditType('credit')}
+              onClick={() => {
+                setCreditType('credit');
+                setSelectedCreditSaleId(null);
+              }}
               className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
                 creditType === 'credit'
                   ? 'border-red-500 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400'
@@ -351,6 +503,12 @@ export function CustomersPage() {
               Nouveau crédit
             </button>
           </div>
+
+          {selectedCreditSaleId && creditType === 'payment' && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300">
+              Paiement lié à la vente #{selectedCreditSaleId}
+            </div>
+          )}
 
           <NumberInput
             id="creditAmt"
