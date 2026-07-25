@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Plus, Search, Pencil, Trash2, CreditCard, ArrowLeft } from 'lucide-react';
 import { db } from '@/db';
-import type { CreditTransaction, Customer, Sale, SaleItem } from '@/types';
+import type { Customer, Sale, SaleItem } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -13,6 +13,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { generateId, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
+import { getCreditRemainingBySale, getCustomerDisplayCreditBalances } from '@/lib/credit';
 import { logAction } from '@/services/auditService';
 import { confirmAction } from '@/stores/confirmStore';
 import { trackDeletion } from '@/services/syncService';
@@ -25,48 +26,8 @@ type CustomerCreditSale = {
   remaining: number;
 };
 
-const getCreditRemainingBySale = (transactions: CreditTransaction[]) => {
-  const map = new Map<string, number>();
-  const debtsByCustomer = new Map<string, { saleId: string; remaining: number }[]>();
-
-  transactions
-    .filter((t) => !t.deleted)
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .forEach((tx) => {
-      const debts = debtsByCustomer.get(tx.customerId) ?? [];
-
-      if (tx.type === 'credit') {
-        if (tx.saleId) {
-          debts.push({ saleId: tx.saleId, remaining: tx.amount });
-          map.set(tx.saleId, tx.amount);
-        }
-        debtsByCustomer.set(tx.customerId, debts);
-        return;
-      }
-
-      let paymentRemaining = tx.amount;
-      if (tx.saleId) {
-        const targetedDebt = debts.find((debt) => debt.saleId === tx.saleId && debt.remaining > 0);
-        if (targetedDebt) {
-          const paid = Math.min(targetedDebt.remaining, paymentRemaining);
-          targetedDebt.remaining -= paid;
-          paymentRemaining -= paid;
-          map.set(targetedDebt.saleId, targetedDebt.remaining);
-        }
-      }
-
-      for (const debt of debts) {
-        if (paymentRemaining <= 0) break;
-        if (debt.remaining <= 0) continue;
-
-        const paid = Math.min(debt.remaining, paymentRemaining);
-        debt.remaining -= paid;
-        paymentRemaining -= paid;
-        map.set(debt.saleId, debt.remaining);
-      }
-    });
-
-  return map;
+type CustomerWithDisplayCredit = Customer & {
+  displayCreditBalance: number;
 };
 
 const emptyCustomer = (): Partial<Customer> => ({
@@ -82,7 +43,7 @@ export function CustomersPage() {
   const [creditFilter, setCreditFilter] = useState<CreditFilter>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [creditModalOpen, setCreditModalOpen] = useState(false);
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithDisplayCredit | null>(null);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [form, setForm] = useState<Partial<Customer>>(emptyCustomer());
   const [creditAmount, setCreditAmount] = useState(0);
@@ -91,21 +52,31 @@ export function CustomersPage() {
   const [selectedCreditSaleId, setSelectedCreditSaleId] = useState<string | null>(null);
 
   const customers = useLiveQuery(async () => {
-    const all = await db.customers.toArray();
+    const [all, sales, transactions] = await Promise.all([
+      db.customers.toArray(),
+      db.sales.toArray(),
+      db.creditTransactions.toArray(),
+    ]);
+    const displayCreditBalances = getCustomerDisplayCreditBalances(all, sales, transactions);
+
     return all
+      .map((customer) => ({
+        ...customer,
+        displayCreditBalance: displayCreditBalances.get(customer.id) ?? customer.creditBalance,
+      }))
       .filter(
         (c) =>
           !c.deleted &&
           (creditFilter === 'all' ||
-            (creditFilter === 'with-credit' && c.creditBalance > 0) ||
-            (creditFilter === 'without-credit' && c.creditBalance <= 0)) &&
+            (creditFilter === 'with-credit' && c.displayCreditBalance > 0) ||
+            (creditFilter === 'without-credit' && c.displayCreditBalance <= 0)) &&
           (!search ||
             normalizeForSearch(c.name).includes(normalizeForSearch(search)) ||
             c.phone.includes(search))
       )
       .sort((a, b) => {
-        const aHasCredit = a.creditBalance > 0;
-        const bHasCredit = b.creditBalance > 0;
+        const aHasCredit = a.displayCreditBalance > 0;
+        const bHasCredit = b.displayCreditBalance > 0;
 
         if (aHasCredit !== bHasCredit) {
           return aHasCredit ? -1 : 1;
@@ -144,7 +115,7 @@ export function CustomersPage() {
         itemsBySale.set(item.saleId, [...(itemsBySale.get(item.saleId) ?? []), item]);
       });
 
-    const remainingBySale = getCreditRemainingBySale(transactions);
+    const remainingBySale = getCreditRemainingBySale(transactions, sales);
 
     return sales
       .map((sale) => ({
@@ -168,7 +139,7 @@ export function CustomersPage() {
     setModalOpen(true);
   };
 
-  const openCredit = (c: Customer) => {
+  const openCredit = (c: CustomerWithDisplayCredit) => {
     setSelectedCustomer(c);
     setCreditAmount(0);
     setCreditNote('');
@@ -220,10 +191,11 @@ export function CustomersPage() {
     if (!selectedCustomer) return;
     const now = nowISO();
 
+    const currentBalance = selectedCustomer.displayCreditBalance ?? selectedCustomer.creditBalance;
     const newBalance =
       creditType === 'credit'
-        ? selectedCustomer.creditBalance + creditAmount
-        : selectedCustomer.creditBalance - creditAmount;
+        ? currentBalance + creditAmount
+        : currentBalance - creditAmount;
 
     await db.customers.update(selectedCustomer.id, {
       creditBalance: Math.max(0, newBalance),
@@ -351,8 +323,8 @@ export function CustomersPage() {
                   <Td className="font-medium">{c.name}</Td>
                   <Td>{c.phone}</Td>
                   <Td>
-                    {c.creditBalance > 0 ? (
-                      <Badge variant="danger">{formatCurrency(c.creditBalance)}</Badge>
+                    {c.displayCreditBalance > 0 ? (
+                      <Badge variant="danger">{formatCurrency(c.displayCreditBalance)}</Badge>
                     ) : (
                       <Badge variant="success">Aucun</Badge>
                     )}
@@ -423,7 +395,7 @@ export function CustomersPage() {
         <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
           <p className="text-sm text-text-muted">Solde crédit actuel</p>
           <p className="text-xl font-bold text-text">
-            {formatCurrency(selectedCustomer?.creditBalance ?? 0)}
+            {formatCurrency(selectedCustomer?.displayCreditBalance ?? selectedCustomer?.creditBalance ?? 0)}
           </p>
         </div>
 

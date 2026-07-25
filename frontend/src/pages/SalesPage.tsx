@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@/components/ui/Table';
 import { useAuthStore } from '@/stores/authStore';
 import { generateId, generateReference, generateSupplierOrderRef, nowISO, formatCurrency, formatDateTime, normalizeForSearch } from '@/lib/utils';
+import { getCreditRemainingBySale } from '@/lib/credit';
 import { exportCSV } from '@/lib/export';
 import { printReceipt } from '@/lib/receipt';
 import { getShopNameOrDefault } from '@/lib/shop';
@@ -260,7 +261,7 @@ export function SalesPage() {
   };
 
   const recentSales = useLiveQuery(async () => {
-    const all = await db.sales.orderBy('date').reverse().limit(200).toArray();
+    const all = await db.sales.orderBy('date').reverse().toArray();
     return all.filter((s) => !s.deleted);
   }) ?? [];
 
@@ -279,52 +280,32 @@ export function SalesPage() {
 }, []) ?? new Map();
 
   const saleCreditRemainingMap = useLiveQuery(async () => {
-    const transactions = (await db.creditTransactions.toArray())
-      .filter((tx) => !tx.deleted)
-      .sort((a, b) => a.date.localeCompare(b.date));
-    const map = new Map<string, number>();
-    const debtsByCustomer = new Map<string, { saleId: string; remaining: number }[]>();
+    const [transactions, sales] = await Promise.all([
+      db.creditTransactions.toArray(),
+      db.sales.toArray(),
+    ]);
 
-    transactions.forEach((tx) => {
-      const debts = debtsByCustomer.get(tx.customerId) ?? [];
-
-      if (tx.type === 'credit') {
-        if (tx.saleId) {
-          debts.push({ saleId: tx.saleId, remaining: tx.amount });
-          map.set(tx.saleId, tx.amount);
-        }
-        debtsByCustomer.set(tx.customerId, debts);
-        return;
-      }
-
-      let paymentRemaining = tx.amount;
-      if (tx.saleId) {
-        const targetedDebt = debts.find((debt) => debt.saleId === tx.saleId && debt.remaining > 0);
-        if (targetedDebt) {
-          const paid = Math.min(targetedDebt.remaining, paymentRemaining);
-          targetedDebt.remaining -= paid;
-          paymentRemaining -= paid;
-          map.set(targetedDebt.saleId, targetedDebt.remaining);
-        }
-      }
-
-      for (const debt of debts) {
-        if (paymentRemaining <= 0) break;
-        if (debt.remaining <= 0) continue;
-
-        const paid = Math.min(debt.remaining, paymentRemaining);
-        debt.remaining -= paid;
-        paymentRemaining -= paid;
-        map.set(debt.saleId, debt.remaining);
-      }
-    });
-
-    return map;
+    return getCreditRemainingBySale(transactions, sales);
   }, []) ?? new Map<string, number>();
 
   const getSaleCreditRemaining = (sale: Sale) => {
     if (sale.paymentMethod !== 'credit' || sale.status !== 'completed') return null;
     return saleCreditRemainingMap.get(sale.id) ?? sale.total;
+  };
+
+  const getSalePaymentDisplay = (sale: Sale) => {
+    const creditRemaining = getSaleCreditRemaining(sale);
+
+    if (creditRemaining !== null) {
+      return creditRemaining > 0
+        ? { label: paymentLabels.credit, variant: 'warning' as const }
+        : { label: 'Payé', variant: 'success' as const };
+    }
+
+    return {
+      label: paymentLabels[sale.paymentMethod],
+      variant: sale.paymentMethod === 'credit' ? 'warning' as const : 'default' as const,
+    };
   };
 
   const getSaleProfit = (sale: Sale) => {
@@ -347,7 +328,11 @@ export function SalesPage() {
 
   const filteredSales = useMemo(() => {
     return recentSales.filter((s) => {
-      if (paymentFilter !== 'all' && s.paymentMethod !== paymentFilter) return false;
+      const paymentDisplay = getSalePaymentDisplay(s);
+      const creditRemaining = getSaleCreditRemaining(s);
+
+      if (paymentFilter === 'credit' && !(creditRemaining !== null && creditRemaining > 0)) return false;
+      if (paymentFilter !== 'all' && paymentFilter !== 'credit' && s.paymentMethod !== paymentFilter) return false;
       if (statusFilter !== 'all' && s.status !== statusFilter) return false;
       if (dateFrom && s.date < dateFrom) return false;
       if (dateTo && s.date > dateTo + 'T23:59:59') return false;
@@ -355,7 +340,7 @@ export function SalesPage() {
         const q = normalizeForSearch(saleSearch);
         const clientName = s.customerId ? normalizeForSearch(customerMap.get(s.customerId) ?? '') : '';
         const sellerName = normalizeForSearch(getSellerName(s));
-        const paymentText = normalizeForSearch(paymentLabels[s.paymentMethod]);
+        const paymentText = normalizeForSearch(paymentDisplay.label);
         const paymentCode = normalizeForSearch(s.paymentMethod);
         const statusText = normalizeForSearch(s.status === 'completed' ? 'Terminée' : 'Annulée');
         const statusCode = normalizeForSearch(s.status);
@@ -375,7 +360,7 @@ export function SalesPage() {
       }
       return true;
     });
-  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, saleItemsMap, dateFrom, dateTo]);
+  }, [recentSales, saleSearch, paymentFilter, statusFilter, customerMap, userMap, saleItemsMap, dateFrom, dateTo, saleCreditRemainingMap]);
 
   const completedSales = useMemo(
     () => filteredSales.filter((sale) => sale.status === 'completed'),
@@ -436,8 +421,8 @@ export function SalesPage() {
           right = b.customerId ? customerMap.get(b.customerId) ?? 'Anonyme' : 'Anonyme';
           break;
         case 'paymentMethod':
-          left = paymentLabels[a.paymentMethod];
-          right = paymentLabels[b.paymentMethod];
+          left = getSalePaymentDisplay(a).label;
+          right = getSalePaymentDisplay(b).label;
           break;
         case 'status':
           left = a.status;
@@ -454,7 +439,7 @@ export function SalesPage() {
       return sortDirection === 'asc' ? comparison : -comparison;
     });
     return sales;
-  }, [filteredSales, sortKey, sortDirection, customerMap]);
+  }, [filteredSales, sortKey, sortDirection, customerMap, saleCreditRemainingMap]);
 
   const totalPages = Math.max(1, Math.ceil(sortedSales.length / itemsPerPage));
   const currentPage = Math.min(page, totalPages);
@@ -1262,7 +1247,7 @@ export function SalesPage() {
                     formatCurrency(s.total),
                     formatCurrency(getSalePurchaseCost(s)),
                     formatCurrency(getSaleProfit(s)),
-                    s.paymentMethod,
+                    getSalePaymentDisplay(s).label,
                     s.status === 'completed' ? 'Terminée' : 'Annulée',
                   ];
                 }
@@ -1271,7 +1256,7 @@ export function SalesPage() {
                   s.id,
                   new Date(s.date).toLocaleDateString('fr-FR'),
                   formatCurrency(s.total),
-                  s.paymentMethod,
+                  getSalePaymentDisplay(s).label,
                   s.status === 'completed' ? 'Terminée' : 'Annulée',
                 ];
               });
@@ -1312,7 +1297,11 @@ export function SalesPage() {
             setPage(1);
           }}
         >
-          <option value="all">Tous les paiements</option>          <option value="mobile">Mobile Money</option>        </select>
+          <option value="all">Tous les paiements</option>
+          <option value="cash">Espèces</option>
+          <option value="credit">Crédit</option>
+          <option value="mobile">Mobile Money</option>
+        </select>
         <select
           className="rounded-lg border border-border bg-surface text-text px-3 py-2 text-sm"
           value={statusFilter}
@@ -1548,9 +1537,10 @@ export function SalesPage() {
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge variant={s.paymentMethod === 'credit' ? 'warning' : 'default'}>
-                    {paymentLabels[s.paymentMethod]}
-                  </Badge>
+                  {(() => {
+                    const paymentDisplay = getSalePaymentDisplay(s);
+                    return <Badge variant={paymentDisplay.variant}>{paymentDisplay.label}</Badge>;
+                  })()}
                   <Badge variant={s.status === 'completed' ? 'success' : 'danger'}>
                     {s.status === 'completed' ? 'Terminée' : 'Annulée'}
                   </Badge>
@@ -1597,7 +1587,7 @@ export function SalesPage() {
                         date: s.date,
                         items: itemsForPrint,
                         total: s.total,
-                        paymentMethod: paymentLabels[s.paymentMethod],
+                        paymentMethod: getSalePaymentDisplay(s).label,
                         customerName: s.customerId ? customerMap.get(s.customerId) : undefined,
                         vendorName: userMap.get(s.userId),
                         shopName: getShopNameOrDefault(),
@@ -1747,9 +1737,10 @@ export function SalesPage() {
                     </Td>
                   )}
                   <Td>
-                    <Badge variant={s.paymentMethod === 'credit' ? 'warning' : 'default'}>
-                      {paymentLabels[s.paymentMethod]}
-                    </Badge>
+                    {(() => {
+                      const paymentDisplay = getSalePaymentDisplay(s);
+                      return <Badge variant={paymentDisplay.variant}>{paymentDisplay.label}</Badge>;
+                    })()}
                   </Td>
                   <Td>
                     <Badge variant={s.status === 'completed' ? 'success' : 'danger'}>
@@ -2587,7 +2578,7 @@ export function SalesPage() {
               </div>
               <div>
                 <p className="text-text-muted">Paiement</p>
-                <p className="font-medium text-text">{paymentLabels[selectedSale.paymentMethod]}</p>
+                <p className="font-medium text-text">{getSalePaymentDisplay(selectedSale).label}</p>
               </div>
               <div>
                 <p className="text-text-muted">Client</p>
@@ -2650,7 +2641,7 @@ export function SalesPage() {
                     date: selectedSale.date,
                     items: selectedItems,
                     total: selectedSale.total,
-                    paymentMethod: paymentLabels[selectedSale.paymentMethod],
+                    paymentMethod: getSalePaymentDisplay(selectedSale).label,
                     customerName: selectedSale.customerId
                       ? customerMap.get(selectedSale.customerId)
                       : undefined,
